@@ -1458,7 +1458,7 @@ MainWindow::checkVersion(bool const alertOnUpToDate)
 
         SelfDestructMessageBox * m = new SelfDestructMessageBox(60,
           "New Updates Available",
-          QString("A new version (%1) of JS8Call is now available. Please see js8call.com for more details.").arg(content),
+          QString("A new version (%1) of JS8Call-improved is now available. Please see the <a href='https://github.com/JS8Call-improved/JS8Call-improved/releases'>GitHub Releases</a> for more details.").arg(content),
           QMessageBox::Information,
           QMessageBox::Ok,
           QMessageBox::Ok,
@@ -1471,7 +1471,7 @@ MainWindow::checkVersion(bool const alertOnUpToDate)
 
         SelfDestructMessageBox * m = new SelfDestructMessageBox(60,
           "No Updates Available",
-          QString("Your version (%1) of JS8Call is up-to-date.").arg(version()),
+          QString("Your version (%1) of JS8Call-improved is up-to-date.").arg(version()),
           QMessageBox::Information,
           QMessageBox::Ok,
           QMessageBox::Ok,
@@ -1483,7 +1483,7 @@ MainWindow::checkVersion(bool const alertOnUpToDate)
   });
 
   qCDebug(mainwindow_js8) << "Checking for Updates...";
-  QUrl url("http://files.js8call.com/version.txt");
+  QUrl url("https://github.com/JS8Call-improved/JS8Call-improved/releases/latest/download/version.txt");
   QNetworkRequest r(url);
   m->get(r);
 }
