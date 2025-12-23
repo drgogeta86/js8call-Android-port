@@ -1,0 +1,423 @@
+package com.js8call.example.ui
+
+import android.Manifest
+import android.content.BroadcastReceiver
+import android.content.Context
+import android.content.Intent
+import android.content.IntentFilter
+import android.content.pm.PackageManager
+import android.media.AudioDeviceInfo
+import android.media.AudioManager
+import android.os.Build
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.AdapterView
+import android.widget.ArrayAdapter
+import android.widget.Button
+import android.widget.Spinner
+import android.widget.TextView
+import androidx.core.content.ContextCompat
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.ViewModelProvider
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import com.google.android.material.snackbar.Snackbar
+import com.js8call.example.R
+import com.js8call.example.model.EngineState
+import com.js8call.example.service.JS8EngineService
+
+/**
+ * Fragment for monitoring/receiving screen.
+ * Shows waterfall display and engine status.
+ */
+class MonitorFragment : Fragment() {
+
+    private lateinit var viewModel: MonitorViewModel
+    private lateinit var decodeViewModel: DecodeViewModel
+
+    private lateinit var waterfallView: WaterfallView
+    private lateinit var statusText: TextView
+    private lateinit var snrValue: TextView
+    private lateinit var powerValue: TextView
+    private lateinit var audioDeviceSpinner: Spinner
+    private lateinit var startStopButton: Button
+
+    // Audio device management
+    private var audioDeviceAdapter: ArrayAdapter<AudioDeviceItem>? = null
+    private var availableDevices = mutableListOf<AudioDeviceItem>()
+    private var isUpdatingSpinner = false
+
+    private val broadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                JS8EngineService.ACTION_ENGINE_STATE -> {
+                    val state = intent.getStringExtra(JS8EngineService.EXTRA_STATE)
+                    handleEngineState(state)
+                }
+                JS8EngineService.ACTION_DECODE -> {
+                    val utc = intent.getIntExtra(JS8EngineService.EXTRA_UTC, 0)
+                    val snr = intent.getIntExtra(JS8EngineService.EXTRA_SNR, 0)
+                    val dt = intent.getFloatExtra(JS8EngineService.EXTRA_DT, 0f)
+                    val freq = intent.getFloatExtra(JS8EngineService.EXTRA_FREQ, 0f)
+                    val text = intent.getStringExtra(JS8EngineService.EXTRA_TEXT) ?: ""
+                    val type = intent.getIntExtra(JS8EngineService.EXTRA_TYPE, 0)
+                    val quality = intent.getFloatExtra(JS8EngineService.EXTRA_QUALITY, 0f)
+                    val mode = intent.getIntExtra(JS8EngineService.EXTRA_MODE, 0)
+
+                    // Add to decode ViewModel
+                    decodeViewModel.addDecode(utc, snr, dt, freq, text, type, quality, mode)
+
+                    // Update SNR in monitor ViewModel
+                    viewModel.updateSnr(snr)
+                }
+                JS8EngineService.ACTION_SPECTRUM -> {
+                    val bins = intent.getFloatArrayExtra(JS8EngineService.EXTRA_BINS)
+                    val binHz = intent.getFloatExtra(JS8EngineService.EXTRA_BIN_HZ, 0f)
+                    val powerDb = intent.getFloatExtra(JS8EngineService.EXTRA_POWER_DB, 0f)
+                    val peakDb = intent.getFloatExtra(JS8EngineService.EXTRA_PEAK_DB, 0f)
+
+                    if (bins != null) {
+                        viewModel.updateSpectrum(bins, binHz, powerDb, peakDb)
+                    }
+                }
+                JS8EngineService.ACTION_AUDIO_DEVICE -> {
+                    val deviceName = intent.getStringExtra(JS8EngineService.EXTRA_AUDIO_DEVICE) ?: "Unknown"
+                    viewModel.updateAudioDevice(deviceName)
+                }
+                JS8EngineService.ACTION_ERROR -> {
+                    val message = intent.getStringExtra(JS8EngineService.EXTRA_ERROR_MESSAGE) ?: "Unknown error"
+                    viewModel.onError(message)
+                }
+            }
+        }
+    }
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        return inflater.inflate(R.layout.fragment_monitor, container, false)
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        // Initialize ViewModels
+        viewModel = ViewModelProvider(this)[MonitorViewModel::class.java]
+        // Share decode view model across fragments
+        decodeViewModel = ViewModelProvider(requireActivity())[DecodeViewModel::class.java]
+
+        // Find views
+        waterfallView = view.findViewById(R.id.waterfall_view)
+        statusText = view.findViewById(R.id.status_text)
+        snrValue = view.findViewById(R.id.snr_value)
+        powerValue = view.findViewById(R.id.power_value)
+        audioDeviceSpinner = view.findViewById(R.id.audio_device_spinner)
+        startStopButton = view.findViewById(R.id.start_stop_button)
+
+        // Set up audio device spinner
+        setupAudioDeviceSpinner()
+
+        // Set up observers
+        observeViewModel()
+
+        // Set up click listeners
+        startStopButton.setOnClickListener {
+            toggleMonitoring()
+        }
+
+        // Register broadcast receiver
+        registerBroadcastReceiver()
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        unregisterBroadcastReceiver()
+    }
+
+    private fun registerBroadcastReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(JS8EngineService.ACTION_ENGINE_STATE)
+            addAction(JS8EngineService.ACTION_DECODE)
+            addAction(JS8EngineService.ACTION_SPECTRUM)
+            addAction(JS8EngineService.ACTION_AUDIO_DEVICE)
+            addAction(JS8EngineService.ACTION_ERROR)
+        }
+        LocalBroadcastManager.getInstance(requireContext())
+            .registerReceiver(broadcastReceiver, filter)
+    }
+
+    private fun unregisterBroadcastReceiver() {
+        LocalBroadcastManager.getInstance(requireContext())
+            .unregisterReceiver(broadcastReceiver)
+    }
+
+    private fun handleEngineState(state: String?) {
+        when (state) {
+            JS8EngineService.STATE_RUNNING -> {
+                viewModel.updateState(EngineState.RUNNING)
+            }
+            JS8EngineService.STATE_STOPPED -> {
+                viewModel.updateState(EngineState.STOPPED)
+            }
+            JS8EngineService.STATE_ERROR -> {
+                viewModel.updateState(EngineState.ERROR)
+            }
+        }
+    }
+
+    private fun observeViewModel() {
+        // Observe status
+        viewModel.status.observe(viewLifecycleOwner) { status ->
+            updateStatus(status.state)
+
+            // Update SNR
+            snrValue.text = if (status.snr != 0) {
+                getString(R.string.format_snr, status.snr)
+            } else {
+                "--"
+            }
+
+            // Update power
+            powerValue.text = if (status.powerDb != 0f) {
+                String.format("%.1f dB", status.powerDb)
+            } else {
+                "--"
+            }
+
+            // Show error if present
+            status.errorMessage?.let { error ->
+                Snackbar.make(requireView(), error, Snackbar.LENGTH_LONG).show()
+            }
+        }
+
+        // Observe spectrum data
+        viewModel.spectrum.observe(viewLifecycleOwner) { spectrum ->
+            // Update waterfall view with spectrum data
+            android.util.Log.d("MonitorFragment", "Spectrum update: ${spectrum.bins.size} bins, power=${spectrum.powerDb} dB")
+            waterfallView.updateSpectrum(spectrum.bins, spectrum.binHz, spectrum.powerDb)
+        }
+
+        // Observe running state
+        viewModel.isRunning.observe(viewLifecycleOwner) { isRunning ->
+            updateButtonState(isRunning)
+            if (!isRunning) {
+                // Clear waterfall when stopped
+                waterfallView.clear()
+            }
+        }
+    }
+
+    private fun updateStatus(state: EngineState) {
+        statusText.text = when (state) {
+            EngineState.STOPPED -> getString(R.string.monitor_status_stopped)
+            EngineState.STARTING -> getString(R.string.monitor_status_starting)
+            EngineState.RUNNING -> getString(R.string.monitor_status_running)
+            EngineState.ERROR -> "ERROR"
+        }
+    }
+
+    private fun updateButtonState(isRunning: Boolean) {
+        if (isRunning) {
+            startStopButton.text = getString(R.string.monitor_stop)
+            startStopButton.setCompoundDrawablesWithIntrinsicBounds(android.R.drawable.ic_media_pause, 0, 0, 0)
+        } else {
+            startStopButton.text = getString(R.string.monitor_start)
+            startStopButton.setCompoundDrawablesWithIntrinsicBounds(android.R.drawable.ic_media_play, 0, 0, 0)
+        }
+    }
+
+    private fun toggleMonitoring() {
+        if (viewModel.isRunning.value == true) {
+            stopMonitoring()
+        } else {
+            startMonitoring()
+        }
+    }
+
+    private fun startMonitoring() {
+        // Check permission
+        if (!hasAudioPermission()) {
+            requestAudioPermission()
+            return
+        }
+
+        // Update view model
+        viewModel.startMonitoring()
+
+        // Start service with selected audio device
+        val intent = Intent(requireContext(), JS8EngineService::class.java).apply {
+            action = JS8EngineService.ACTION_START
+            // Pass selected device ID if any
+            if (availableDevices.isNotEmpty()) {
+                val selectedPos = audioDeviceSpinner.selectedItemPosition
+                if (selectedPos >= 0 && selectedPos < availableDevices.size) {
+                    val selectedDevice = availableDevices[selectedPos]
+                    putExtra(JS8EngineService.EXTRA_AUDIO_DEVICE_ID, selectedDevice.id)
+                    android.util.Log.d("MonitorFragment",
+                        "Starting with device: ${selectedDevice.name} (ID: ${selectedDevice.id})")
+                }
+            }
+        }
+        ContextCompat.startForegroundService(requireContext(), intent)
+    }
+
+    private fun stopMonitoring() {
+        // Update view model
+        viewModel.stopMonitoring()
+
+        // Stop service
+        val intent = Intent(requireContext(), JS8EngineService::class.java).apply {
+            action = JS8EngineService.ACTION_STOP
+        }
+        requireContext().startService(intent)
+    }
+
+    private fun hasAudioPermission(): Boolean {
+        return ContextCompat.checkSelfPermission(
+            requireContext(),
+            Manifest.permission.RECORD_AUDIO
+        ) == PackageManager.PERMISSION_GRANTED
+    }
+
+    private fun requestAudioPermission() {
+        requestPermissions(
+            arrayOf(Manifest.permission.RECORD_AUDIO),
+            REQUEST_AUDIO_PERMISSION
+        )
+    }
+
+    @Deprecated("Deprecated in Java")
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+
+        if (requestCode == REQUEST_AUDIO_PERMISSION) {
+            if (grantResults.isNotEmpty() &&
+                grantResults[0] == PackageManager.PERMISSION_GRANTED
+            ) {
+                // Permission granted, try starting again
+                startMonitoring()
+            } else {
+                Snackbar.make(
+                    requireView(),
+                    R.string.permission_audio_denied,
+                    Snackbar.LENGTH_LONG
+                ).show()
+            }
+        }
+    }
+
+    private fun setupAudioDeviceSpinner() {
+        // Create adapter
+        audioDeviceAdapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_item,
+            availableDevices
+        )
+        audioDeviceAdapter?.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        audioDeviceSpinner.adapter = audioDeviceAdapter
+
+        // Set up selection listener
+        audioDeviceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (isUpdatingSpinner) return
+                if (position < 0 || position >= availableDevices.size) return
+
+                val selectedDevice = availableDevices[position]
+                android.util.Log.d("MonitorFragment", "Audio device selected: ${selectedDevice.name} (ID: ${selectedDevice.id})")
+
+                // Only switch if engine is running
+                if (viewModel.isRunning.value == true) {
+                    switchAudioDevice(selectedDevice.id)
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                // Do nothing
+            }
+        }
+
+        // Populate with available devices
+        refreshAudioDevices()
+    }
+
+    private fun refreshAudioDevices() {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) {
+            // Fallback for older versions
+            availableDevices.clear()
+            availableDevices.add(AudioDeviceItem(-1, "Default Microphone"))
+            audioDeviceAdapter?.notifyDataSetChanged()
+            return
+        }
+
+        val audioManager = requireContext().getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        val devices = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+
+        availableDevices.clear()
+
+        for (device in devices) {
+            val deviceName = when (device.type) {
+                AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Internal Microphone"
+                AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset"
+                AudioDeviceInfo.TYPE_USB_DEVICE -> {
+                    device.productName?.toString() ?: "USB Audio Device"
+                }
+                AudioDeviceInfo.TYPE_USB_ACCESSORY -> "USB Audio Accessory"
+                AudioDeviceInfo.TYPE_USB_HEADSET -> "USB Headset"
+                AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "Bluetooth Headset"
+                AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "Bluetooth Audio"
+                AudioDeviceInfo.TYPE_LINE_ANALOG -> "Line Input"
+                AudioDeviceInfo.TYPE_LINE_DIGITAL -> "Digital Line Input"
+                else -> continue  // Skip unknown types
+            }
+
+            availableDevices.add(AudioDeviceItem(device.id, deviceName))
+            android.util.Log.d("MonitorFragment", "Found audio device: $deviceName (ID: ${device.id})")
+        }
+
+        // Add default option if no devices found
+        if (availableDevices.isEmpty()) {
+            availableDevices.add(AudioDeviceItem(-1, "Default Microphone"))
+        }
+
+        audioDeviceAdapter?.notifyDataSetChanged()
+
+        // Select first device by default
+        if (availableDevices.isNotEmpty()) {
+            isUpdatingSpinner = true
+            audioDeviceSpinner.setSelection(0)
+            isUpdatingSpinner = false
+        }
+    }
+
+    private fun switchAudioDevice(deviceId: Int) {
+        // Send intent to service to switch audio device
+        val intent = Intent(requireContext(), JS8EngineService::class.java).apply {
+            action = JS8EngineService.ACTION_SWITCH_AUDIO_DEVICE
+            putExtra(JS8EngineService.EXTRA_AUDIO_DEVICE_ID, deviceId)
+        }
+        requireContext().startService(intent)
+
+        Snackbar.make(requireView(), "Switching audio device...", Snackbar.LENGTH_SHORT).show()
+    }
+
+    /**
+     * Data class for audio device items in spinner.
+     */
+    private data class AudioDeviceItem(
+        val id: Int,
+        val name: String
+    ) {
+        override fun toString(): String = name
+    }
+
+    companion object {
+        private const val REQUEST_AUDIO_PERMISSION = 1
+    }
+}

@@ -1,0 +1,133 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">JS8Call</string>
+
+    <!-- Bottom navigation -->
+    <string name="nav_monitor">Monitor</string>
+    <string name="nav_decodes">Decodes</string>
+    <string name="nav_transmit">Transmit</string>
+    <string name="nav_settings">Settings</string>
+
+    <!-- Monitor screen -->
+    <string name="monitor_start">Start</string>
+    <string name="monitor_stop">Stop</string>
+    <string name="monitor_status_stopped">Stopped</string>
+    <string name="monitor_status_starting">Starting…</string>
+    <string name="monitor_status_running">Monitoring</string>
+    <string name="monitor_status_error">Error: %s</string>
+    <string name="monitor_frequency">Frequency</string>
+    <string name="monitor_bandwidth">Bandwidth</string>
+    <string name="monitor_snr">SNR</string>
+    <string name="monitor_power">Power</string>
+    <string name="monitor_audio_device">Audio Device</string>
+
+    <!-- Decodes screen -->
+    <string name="decodes_title">Decoded Messages</string>
+    <string name="decodes_empty">No messages decoded yet</string>
+    <string name="decodes_clear">Clear</string>
+    <string name="decodes_copy">Copy</string>
+    <string name="decodes_reply">Reply</string>
+    <string name="decodes_filter">Filter</string>
+    <string name="decode_time">Time</string>
+    <string name="decode_snr">SNR</string>
+    <string name="decode_freq">Freq</string>
+    <string name="decode_dt">DT</string>
+    <string name="decode_text">Message</string>
+
+    <!-- Transmit screen -->
+    <string name="tx_compose_hint">Type message here…</string>
+    <string name="tx_send">Send</string>
+    <string name="tx_cq">CQ</string>
+    <string name="tx_directed">To:</string>
+    <string name="tx_directed_hint">Callsign</string>
+    <string name="tx_snr_report">SNR</string>
+    <string name="tx_queue">Queue</string>
+    <string name="tx_queue_empty">Transmit queue empty</string>
+    <string name="tx_mode">Mode</string>
+    <string name="tx_speed">Speed</string>
+    <string name="tx_power">Power</string>
+    <string name="tx_status_idle">Ready to transmit</string>
+    <string name="tx_status_queued">Message queued</string>
+    <string name="tx_status_transmitting">Transmitting…</string>
+
+    <!-- Settings -->
+    <string name="settings_title">Settings</string>
+    <string name="settings_category_audio">Audio</string>
+    <string name="settings_category_radio">Radio</string>
+    <string name="settings_category_network">Network</string>
+    <string name="settings_category_general">General</string>
+
+    <string name="settings_callsign">Callsign</string>
+    <string name="settings_callsign_summary">Your amateur radio callsign</string>
+    <string name="settings_grid">Grid Square</string>
+    <string name="settings_grid_summary">Your Maidenhead locator</string>
+
+    <string name="settings_sample_rate">Sample Rate</string>
+    <string name="settings_sample_rate_summary">Audio sample rate (Hz)</string>
+    <string name="settings_audio_source">Audio Source</string>
+    <string name="settings_audio_source_summary">Microphone or line input</string>
+
+    <string name="settings_rig_control">Rig Control</string>
+    <string name="settings_rig_control_summary">Enable CAT control</string>
+    <string name="settings_rig_type">Rig Type</string>
+    <string name="settings_rig_type_summary">Radio model</string>
+    <string name="settings_rig_port">Port</string>
+    <string name="settings_rig_port_summary">USB or network</string>
+
+    <string name="settings_psk_reporter">PSK Reporter</string>
+    <string name="settings_psk_reporter_summary">Report spots to pskreporter.info</string>
+    <string name="settings_aprs_is">APRS-IS</string>
+    <string name="settings_aprs_is_summary">Enable APRS-IS integration</string>
+
+    <string name="settings_theme">Theme</string>
+    <string name="settings_theme_summary">Light, dark, or system</string>
+    <string name="settings_keep_screen_on">Keep Screen On</string>
+    <string name="settings_keep_screen_on_summary">Prevent screen from dimming</string>
+
+    <!-- Permissions -->
+    <string name="permission_audio_title">Microphone Permission</string>
+    <string name="permission_audio_message">JS8Call needs microphone access to receive signals</string>
+    <string name="permission_audio_denied">Microphone permission denied. Enable in Settings.</string>
+    <string name="permission_location_title">Location Permission</string>
+    <string name="permission_location_message">Used to automatically determine grid square</string>
+
+    <!-- Errors -->
+    <string name="error_engine_start">Failed to start engine</string>
+    <string name="error_audio_start">Failed to start audio capture</string>
+    <string name="error_no_rig">No rig connected</string>
+    <string name="error_invalid_callsign">Invalid callsign format</string>
+    <string name="error_network">Network error: %s</string>
+
+    <!-- Notifications -->
+    <string name="notification_channel_name">JS8Call Service</string>
+    <string name="notification_channel_desc">Background monitoring and decoding</string>
+    <string name="notification_title">JS8Call Running</string>
+    <string name="notification_text">Monitoring for signals…</string>
+    <string name="notification_action_stop">Stop</string>
+
+    <!-- Menu -->
+    <string name="menu_about">About</string>
+    <string name="menu_help">Help</string>
+    <string name="menu_export_log">Export Log</string>
+    <string name="menu_clear_all">Clear All</string>
+
+    <!-- About -->
+    <string name="about_version">Version %s</string>
+    <string name="about_copyright">Copyright © 2025</string>
+    <string name="about_license">Licensed under GPL v3</string>
+    <string name="about_website">https://js8call.com</string>
+
+    <!-- Units -->
+    <string name="unit_hz">Hz</string>
+    <string name="unit_khz">kHz</string>
+    <string name="unit_db">dB</string>
+    <string name="unit_sec">s</string>
+    <string name="unit_wpm">WPM</string>
+
+    <!-- Format strings -->
+    <string name="format_frequency">%d Hz</string>
+    <string name="format_snr">%+d dB</string>
+    <string name="format_dt">%+.1f s</string>
+    <string name="format_time">%02d:%02d</string>
+    <string name="format_decode">%04d  %+3d dB  %+5.1f s  %7.1f Hz  %s</string>
+</resources>

@@ -1,0 +1,7 @@
+{
+  global:
+    JNI_OnLoad;
+    Java_com_js8call_core_*;
+  local:
+    *;
+};

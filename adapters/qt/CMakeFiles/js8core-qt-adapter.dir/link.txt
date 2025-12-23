@@ -1,0 +1,2 @@
+/usr/bin/ar qc libjs8core-qt-adapter.a "CMakeFiles/js8core-qt-adapter.dir/js8core-qt-adapter_autogen/mocs_compilation.cpp.o" "CMakeFiles/js8core-qt-adapter.dir/src/logger_adapter.cpp.o" "CMakeFiles/js8core-qt-adapter.dir/src/audio_adapter.cpp.o" "CMakeFiles/js8core-qt-adapter.dir/src/rig_adapter.cpp.o" "CMakeFiles/js8core-qt-adapter.dir/src/network_adapter.cpp.o" "CMakeFiles/js8core-qt-adapter.dir/src/varicode_adapter.cpp.o" "CMakeFiles/js8core-qt-adapter.dir/src/engine_adapter.cpp.o"
+/usr/bin/ranlib libjs8core-qt-adapter.a

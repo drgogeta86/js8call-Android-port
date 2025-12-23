@@ -1,0 +1,113 @@
+<?xml version="1.0" encoding="utf-8"?>
+<PreferenceScreen xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto">
+
+    <!-- Station Info Category -->
+    <PreferenceCategory
+        app:title="@string/settings_category_general"
+        app:iconSpaceReserved="false">
+
+        <EditTextPreference
+            app:key="callsign"
+            app:title="@string/settings_callsign"
+            app:summary="@string/settings_callsign_summary"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
+        <EditTextPreference
+            app:key="grid"
+            app:title="@string/settings_grid"
+            app:summary="@string/settings_grid_summary"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
+    </PreferenceCategory>
+
+    <!-- Audio Category -->
+    <PreferenceCategory
+        app:title="@string/settings_category_audio"
+        app:iconSpaceReserved="false">
+
+        <ListPreference
+            app:key="sample_rate"
+            app:title="@string/settings_sample_rate"
+            app:summary="@string/settings_sample_rate_summary"
+            app:entries="@array/sample_rate_entries"
+            app:entryValues="@array/sample_rate_values"
+            app:defaultValue="12000"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
+    </PreferenceCategory>
+
+    <!-- Radio Category -->
+    <PreferenceCategory
+        app:title="@string/settings_category_radio"
+        app:iconSpaceReserved="false">
+
+        <SwitchPreferenceCompat
+            app:key="rig_control_enabled"
+            app:title="@string/settings_rig_control"
+            app:summary="@string/settings_rig_control_summary"
+            app:defaultValue="false"
+            app:iconSpaceReserved="false" />
+
+        <ListPreference
+            app:key="rig_type"
+            app:title="@string/settings_rig_type"
+            app:summary="@string/settings_rig_type_summary"
+            app:entries="@array/rig_type_entries"
+            app:entryValues="@array/rig_type_values"
+            app:defaultValue="none"
+            app:dependency="rig_control_enabled"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
+    </PreferenceCategory>
+
+    <!-- Network Category -->
+    <PreferenceCategory
+        app:title="@string/settings_category_network"
+        app:iconSpaceReserved="false">
+
+        <SwitchPreferenceCompat
+            app:key="psk_reporter"
+            app:title="@string/settings_psk_reporter"
+            app:summary="@string/settings_psk_reporter_summary"
+            app:defaultValue="false"
+            app:iconSpaceReserved="false" />
+
+        <SwitchPreferenceCompat
+            app:key="aprs_is"
+            app:title="@string/settings_aprs_is"
+            app:summary="@string/settings_aprs_is_summary"
+            app:defaultValue="false"
+            app:iconSpaceReserved="false" />
+
+    </PreferenceCategory>
+
+    <!-- General Category -->
+    <PreferenceCategory
+        app:title="@string/settings_category_general"
+        app:iconSpaceReserved="false">
+
+        <ListPreference
+            app:key="theme"
+            app:title="@string/settings_theme"
+            app:summary="@string/settings_theme_summary"
+            app:entries="@array/theme_entries"
+            app:entryValues="@array/theme_values"
+            app:defaultValue="system"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
+        <SwitchPreferenceCompat
+            app:key="keep_screen_on"
+            app:title="@string/settings_keep_screen_on"
+            app:summary="@string/settings_keep_screen_on_summary"
+            app:defaultValue="false"
+            app:iconSpaceReserved="false" />
+
+    </PreferenceCategory>
+
+</PreferenceScreen>

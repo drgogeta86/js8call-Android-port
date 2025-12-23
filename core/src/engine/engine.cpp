@@ -1,0 +1,604 @@
+#include "js8core/engine.hpp"
+
+#include <algorithm>
+#include <cmath>
+#include <complex>
+#include <cstring>
+#include "js8core/compat/numbers.hpp"
+#include <span>
+#include <utility>
+#include <vector>
+
+#ifdef __ANDROID__
+#include <android/log.h>
+#endif
+
+#include "commons.h"
+#include "js8core/decoder_state.hpp"
+#include "js8core/decoder_bridge.hpp"
+#include "js8core/protocol/submode.hpp"
+#include "js8core/types.hpp"
+
+namespace js8core {
+
+namespace {
+
+class Js8EngineImpl : public Js8Engine {
+public:
+  Js8EngineImpl(EngineConfig config, EngineCallbacks callbacks, EngineDependencies deps)
+      : config_(std::move(config)),
+        callbacks_(std::move(callbacks)),
+        deps_(deps) {
+    decode_state_.samples.resize(kJs8NtMax * kJs8RxSampleRate);
+
+    // Initialize decoder parameters with sensible defaults
+    decode_state_.params.nfa = 200;   // Start frequency (Hz) - avoid low-freq noise
+    decode_state_.params.nfb = 2500;  // End frequency (Hz) - typical JS8Call range
+    decode_state_.params.nfqso = 1500; // Center frequency for QSO
+
+    // Align the ring buffer position to wall clock so decode windows line up with
+    // the desktop timing (cycles relative to UTC within the current minute).
+    {
+      auto const sample_rate = config_.sample_rate_hz ? config_.sample_rate_hz : kJs8RxSampleRate;
+      using clock = std::chrono::system_clock;
+      auto now = clock::now();
+      auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
+      // JS8 RX buffer spans 60 seconds; use milliseconds into the current minute.
+      auto ms_in_minute = ms_since_epoch.count() % (kJs8NtMax * 1000);
+      int aligned = static_cast<int>((ms_in_minute * sample_rate) / 1000);
+      decode_state_.params.kin = aligned;
+      total_samples_ = aligned;
+      k0_ = aligned;
+      if (callbacks_.on_log) {
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg),
+                 "Ring buffer aligned to UTC minute: ms_in_minute=%lld, offset_samples=%d, sample_rate=%d",
+                 static_cast<long long>(ms_in_minute), aligned, sample_rate);
+        callbacks_.on_log(LogLevel::Info, log_msg);
+      }
+    }
+
+    if (config_.submodes == 0) {
+      int mask = 0;
+      for (auto const& sm : js8core::protocol::submodes()) {
+        if (sm.enabled) mask |= 1 << static_cast<int>(sm.id);
+      }
+      config_.submodes = mask;
+    }
+    init_schedules();
+  }
+
+  bool start() override {
+    running_ = true;
+
+    if (deps_.audio_in) {
+      AudioStreamParams params;
+      params.format.sample_rate = config_.sample_rate_hz ? config_.sample_rate_hz : kJs8RxSampleRate;
+      params.format.channels = 1;
+      params.format.sample_type = SampleType::Int16;
+      params.frames_per_buffer = 0;
+
+      auto ok = deps_.audio_in->start(
+          params,
+          [this](AudioInputBuffer const& buf) {
+            if (running_) submit_capture(buf);
+          },
+          [this](std::string_view msg) {
+            if (callbacks_.on_error) callbacks_.on_error(msg);
+          });
+
+      if (!ok && callbacks_.on_error) {
+        callbacks_.on_error("Failed to start audio input");
+      }
+    }
+
+    if (deps_.rig) {
+      deps_.rig->start(
+          [](RigState const&) {},
+          [this](std::string_view msg) {
+            if (callbacks_.on_error) callbacks_.on_error(msg);
+          });
+    }
+
+    return true;
+  }
+
+  void stop() override {
+    running_ = false;
+    if (deps_.audio_in) deps_.audio_in->stop();
+    if (deps_.audio_out) deps_.audio_out->stop();
+    if (deps_.rig) deps_.rig->stop();
+  }
+
+  bool submit_capture(AudioInputBuffer const& buffer) override {
+    if (buffer.format.sample_type != SampleType::Int16) {
+      if (callbacks_.on_error) callbacks_.on_error("Unsupported sample type");
+      return false;
+    }
+
+    // Only accept matching sample rate for now.
+    if (config_.sample_rate_hz && buffer.format.sample_rate != config_.sample_rate_hz) {
+      if (callbacks_.on_error) callbacks_.on_error("Unexpected sample rate");
+      return false;
+    }
+
+    auto bytes_per_sample = static_cast<std::size_t>(sizeof(std::int16_t) * buffer.format.channels);
+    if (bytes_per_sample == 0) return false;
+    auto total_samples = buffer.data.size() / bytes_per_sample;
+
+    // Append mono data; if stereo, take left channel for now.
+    auto* raw = reinterpret_cast<const std::int16_t*>(buffer.data.data());
+    std::size_t frames = total_samples / static_cast<std::size_t>(buffer.format.channels);
+
+    // Calculate RMS power to verify we're getting actual audio data
+    static int audio_log_counter = 0;
+    if (++audio_log_counter % 100 == 0 && callbacks_.on_log) {
+      double sum_squares = 0.0;
+      for (std::size_t i = 0; i < frames; ++i) {
+        int16_t sample = raw[i * buffer.format.channels];
+        sum_squares += static_cast<double>(sample) * static_cast<double>(sample);
+      }
+      double rms = std::sqrt(sum_squares / static_cast<double>(frames));
+      char log_msg[256];
+      snprintf(log_msg, sizeof(log_msg),
+              "Audio submit: frames=%zu, rms=%.1f, total_samples=%d, kin=%d",
+              frames, rms, total_samples_, decode_state_.params.kin);
+      callbacks_.on_log(LogLevel::Info, log_msg);
+    }
+
+    for (std::size_t i = 0; i < frames; ++i) {
+      auto write_index = (static_cast<std::size_t>(decode_state_.params.kin) + i) % decode_state_.samples.size();
+      decode_state_.samples[write_index] = raw[i * buffer.format.channels];
+    }
+    decode_state_.params.kin = (decode_state_.params.kin + static_cast<int>(frames)) %
+                               static_cast<int>(decode_state_.samples.size());
+    total_samples_ += static_cast<int>(frames);
+
+    // Emit a lightweight spectrum frame for UI consumers.
+    if (callbacks_.on_event && frames > 0) {
+      auto spectrum = compute_spectrum(raw, frames, buffer.format.channels, buffer.format.sample_rate);
+      if (!spectrum.bins.empty()) {
+        callbacks_.on_event(spectrum);
+      }
+    }
+
+    // Trigger decode scheduling when we've accumulated enough samples.
+    schedule_decodes();
+    return true;
+  }
+
+private:
+    struct SubmodeSchedule {
+      protocol::SubmodeId id;
+      int period_samples;
+      int start_delay_samples;
+      int samples_needed;
+      int start_offset_samples;
+      int current_decode_start = -1;  // Absolute position in buffer for current decode window
+      int next_decode_start = -1;     // Absolute position in buffer for next decode window
+      int next_start = 0;  // Keep for compatibility (unused now)
+    };
+
+    void init_schedules() {
+      // Get current UTC time to synchronize decode windows
+      using clock = std::chrono::system_clock;
+      auto now = clock::now();
+      auto t = clock::to_time_t(now);
+      std::tm utc_tm{};
+#if defined(_WIN32)
+      gmtime_s(&utc_tm, &t);
+#else
+      gmtime_r(&t, &utc_tm);
+#endif
+
+      // Get milliseconds within current second
+      auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
+      int ms_in_second = ms_since_epoch.count() % 1000;
+      int total_ms = utc_tm.tm_sec * 1000 + ms_in_second;
+
+      auto modes = protocol::submodes();
+      for (auto const& sm : modes) {
+        if ((config_.submodes & (1 << static_cast<int>(sm.id))) == 0) continue;
+        int sample_rate = config_.sample_rate_hz ? config_.sample_rate_hz : kJs8RxSampleRate;
+        int period = sm.tx_seconds * sample_rate;
+        int period_ms = sm.tx_seconds * 1000;
+
+        // Calculate time until next period boundary
+        // JS8 periods start at multiples of the period (0, 15, 30, 45 sec for 15s periods)
+        // with the start_delay_ms offset (e.g., A starts at 0.5, 15.5, 30.5, 45.5)
+        int ms_into_period = total_ms % period_ms;
+        int ms_until_next = (period_ms - ms_into_period + sm.start_delay_ms) % period_ms;
+        if (ms_until_next == 0) ms_until_next = period_ms;
+
+        // Convert to samples
+        int samples_until_next = (ms_until_next * sample_rate) / 1000;
+        int start_delay_samples = (sm.start_delay_ms * sample_rate) / 1000;
+        int offset_samples = 0;  // Keep windows simple; no additional phase offset
+
+        if (callbacks_.on_log) {
+          char log_msg[256];
+          snprintf(log_msg, sizeof(log_msg),
+                  "Submode %.*s: period=%ds, delay=%dms, current=%d.%03ds, next_in=%dms (%d samples)",
+                  static_cast<int>(sm.name.length()), sm.name.data(),
+                  sm.tx_seconds, sm.start_delay_ms,
+                  utc_tm.tm_sec, ms_in_second, ms_until_next, samples_until_next);
+          callbacks_.on_log(LogLevel::Info, log_msg);
+        }
+
+        // Calculate samples needed for decode (includes start delay)
+        int samples_needed = (sm.symbol_samples * JS8_NUM_SYMBOLS) +
+                            static_cast<int>((0.5 + sm.start_delay_ms / 1000.0) * sample_rate);
+
+        schedules_.push_back(SubmodeSchedule{sm.id, period, start_delay_samples, samples_needed,
+                                             offset_samples, -1, -1, samples_until_next});
+      }
+    }
+
+    void set_submode_window(protocol::SubmodeId id, int start, int size) {
+      switch (id) {
+        case protocol::SubmodeId::A:
+          decode_state_.params.kposA = start;
+          decode_state_.params.kszA = size;
+          break;
+        case protocol::SubmodeId::B:
+          decode_state_.params.kposB = start;
+          decode_state_.params.kszB = size;
+          break;
+        case protocol::SubmodeId::C:
+          decode_state_.params.kposC = start;
+          decode_state_.params.kszC = size;
+          break;
+        case protocol::SubmodeId::E:
+          decode_state_.params.kposE = start;
+          decode_state_.params.kszE = size;
+          break;
+        case protocol::SubmodeId::I:
+          decode_state_.params.kposI = start;
+          decode_state_.params.kszI = size;
+          break;
+      }
+    }
+
+    void populate_decode_metadata() {
+      using clock = std::chrono::system_clock;
+      auto now = clock::now();
+      auto t = clock::to_time_t(now);
+      std::tm utc_tm{};
+#if defined(_WIN32)
+      gmtime_s(&utc_tm, &t);
+#else
+      gmtime_r(&t, &utc_tm);
+#endif
+      decode_state_.params.utc = utc_tm.tm_hour * 10000 + utc_tm.tm_min * 100 + utc_tm.tm_sec;
+      decode_state_.params.newdat = true;
+      decode_state_.params.syncStats = false;
+    }
+
+    // Port of isDecodeReady() from mainwindow.cpp
+    // Returns true if decode should happen, sets start and size for decode window
+    bool isDecodeReady(SubmodeSchedule& sch, int k, int k0, int* start, int* size) {
+      int const cycleFrames = sch.period_samples;
+      int const framesNeeded = sch.samples_needed;
+      int const maxFrames = kJs8NtMax * kJs8RxSampleRate;
+
+      // Compute which cycle we're in based on current position
+      int const currentCycle = (k / cycleFrames) % (maxFrames / cycleFrames);
+      int const delta = std::abs(k - k0);
+
+      // Check for buffer loop or discontinuity (deadAir condition)
+      bool const deadAir = (k < sch.current_decode_start &&
+                           k < std::max(0, sch.current_decode_start - cycleFrames + framesNeeded));
+
+      // DEBUG: Log the state before reset check
+      static int debug_counter = 0;
+      if (++debug_counter % 50 == 0 && callbacks_.on_log) {
+        char log_msg[512];
+        snprintf(log_msg, sizeof(log_msg),
+                "isDecodeReady DEBUG: submode=%d, k=%d, k0=%d, cycleFrames=%d, framesNeeded=%d, "
+                "currentCycle=%d, delta=%d, deadAir=%d, current_decode_start=%d, next_decode_start=%d",
+                static_cast<int>(sch.id), k, k0, cycleFrames, framesNeeded,
+                currentCycle, delta, deadAir, sch.current_decode_start, sch.next_decode_start);
+        callbacks_.on_log(LogLevel::Info, log_msg);
+      }
+
+      // Reset decode window on buffer loop, init, or discontinuity
+      if (deadAir ||
+          (k < k0) ||
+          (delta > cycleFrames) ||
+          (sch.current_decode_start == -1) ||
+          (sch.next_decode_start == -1))
+      {
+        // Set to UTC-synchronized position using the phase offset (desktop behavior).
+        int aligned_start = sch.start_offset_samples + currentCycle * cycleFrames;
+        sch.current_decode_start = aligned_start;
+        sch.next_decode_start = sch.current_decode_start + cycleFrames;
+
+        if (callbacks_.on_log) {
+          char log_msg[512];
+          snprintf(log_msg, sizeof(log_msg),
+                  "isDecodeReady RESET: submode=%d, new current_decode_start=%d, new next_decode_start=%d",
+                  static_cast<int>(sch.id), sch.current_decode_start, sch.next_decode_start);
+          callbacks_.on_log(LogLevel::Info, log_msg);
+        }
+      }
+
+      // Check if we have enough samples for this decode window
+      bool const ready = sch.current_decode_start + framesNeeded <= k;
+
+      // DEBUG: Log ready check
+      if (callbacks_.on_log && (debug_counter % 50 == 0 || ready)) {
+        char log_msg[512];
+        snprintf(log_msg, sizeof(log_msg),
+                "isDecodeReady CHECK: submode=%d, ready=%d, need=%d, have=%d, "
+                "current_decode_start=%d, framesNeeded=%d, k=%d",
+                static_cast<int>(sch.id), ready, sch.current_decode_start + framesNeeded, k,
+                sch.current_decode_start, framesNeeded, k);
+        callbacks_.on_log(LogLevel::Info, log_msg);
+      }
+
+      if (ready) {
+        *start = sch.current_decode_start;  // Absolute position in buffer
+        *size = std::max(framesNeeded, k - sch.current_decode_start);
+
+        // Advance to next decode window
+        sch.current_decode_start = sch.next_decode_start;
+        sch.next_decode_start = sch.current_decode_start + cycleFrames;
+      }
+
+      return ready;
+    }
+
+    void schedule_decodes() {
+      if (!callbacks_.on_event) return;
+
+      // DEBUG: Confirm schedule_decodes() is being called
+      static int sched_call_counter = 0;
+      if (++sched_call_counter % 100 == 0 && callbacks_.on_log) {
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg),
+                "schedule_decodes CALLED: count=%d, total_samples=%d, k0=%d, schedules_size=%zu",
+                sched_call_counter, total_samples_, k0_, schedules_.size());
+        callbacks_.on_log(LogLevel::Info, log_msg);
+      }
+
+      bool any = false;
+      decode_state_.params.nsubmodes = 0;
+
+      // Use isDecodeReady() to determine if each submode should decode
+      // This replaces the old rolling window approach with UTC-synchronized fixed windows
+      for (auto& sch : schedules_) {
+        int start = 0;
+        int size = 0;
+
+        // isDecodeReady() returns true when we have a complete decode window ready
+        // It sets start to the absolute position in the circular buffer
+        bool ready_result = isDecodeReady(sch, total_samples_, k0_, &start, &size);
+
+        // DEBUG: Log the result
+        static int result_counter = 0;
+        if (++result_counter % 50 == 0 && callbacks_.on_log) {
+          char log_msg[256];
+          snprintf(log_msg, sizeof(log_msg),
+                  "isDecodeReady RESULT: submode=%d, returned=%d, start=%d, size=%d",
+                  static_cast<int>(sch.id), ready_result, start, size);
+          callbacks_.on_log(LogLevel::Info, log_msg);
+        }
+
+#ifdef __ANDROID__
+        // ALWAYS log before the if check
+        __android_log_print(ANDROID_LOG_ERROR, "JS8Core",
+                           "ABOUT TO CHECK IF: ready_result=%d (submode=%d)",
+                           ready_result, static_cast<int>(sch.id));
+#endif
+
+        if (ready_result) {
+#ifdef __ANDROID__
+          __android_log_print(ANDROID_LOG_ERROR, "JS8Core",
+                             "IF CONDITION IS TRUE: ready_result=%d (submode=%d)",
+                             ready_result, static_cast<int>(sch.id));
+
+          __android_log_print(ANDROID_LOG_ERROR, "JS8Core", "STEP 1: About to create char buffer");
+#endif
+          // ALWAYS log this - no conditions!
+          char log_msg_ifblock[256];
+#ifdef __ANDROID__
+          __android_log_print(ANDROID_LOG_ERROR, "JS8Core", "STEP 2: Created char buffer, about to snprintf");
+#endif
+          snprintf(log_msg_ifblock, sizeof(log_msg_ifblock),
+                  "INSIDE IF BLOCK: submode=%d, start=%d, size=%d",
+                  static_cast<int>(sch.id), start, size);
+#ifdef __ANDROID__
+          __android_log_print(ANDROID_LOG_ERROR, "JS8Core", "STEP 3: snprintf done, start=%d, size=%d", start, size);
+#endif
+          if (callbacks_.on_log) {
+            callbacks_.on_log(LogLevel::Info, log_msg_ifblock);
+          }
+#ifdef __ANDROID__
+          __android_log_print(ANDROID_LOG_ERROR, "JS8Core",
+                             "!!! INSIDE IF BLOCK: submode=%d, start=%d, size=%d !!!",
+                             static_cast<int>(sch.id), start, size);
+#endif
+
+          // Take kpos modulo buffer size to handle circular buffer wrapping
+          int const buffer_size = kJs8NtMax * kJs8RxSampleRate;  // 720,000 samples
+          int const wrapped_start = start % buffer_size;
+
+          set_submode_window(sch.id, wrapped_start, size);
+          decode_state_.params.nsubmodes |= (1 << static_cast<int>(sch.id));
+          any = true;
+
+          if (callbacks_.on_log) {
+            // Get UTC time for logging
+            using clock = std::chrono::system_clock;
+            auto now = clock::now();
+            auto t = clock::to_time_t(now);
+            std::tm utc_tm{};
+#if defined(_WIN32)
+            gmtime_s(&utc_tm, &t);
+#else
+            gmtime_r(&t, &utc_tm);
+#endif
+            auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
+            int ms_in_second = ms_since_epoch.count() % 1000;
+
+            char log_msg[512];
+            snprintf(log_msg, sizeof(log_msg),
+                    "Decode ready at UTC %02d:%02d:%02d.%03d, submode_id=%d, kpos_abs=%d, kpos_wrapped=%d, ksz=%d, total_samples=%d, k0=%d",
+                    utc_tm.tm_hour, utc_tm.tm_min, utc_tm.tm_sec, ms_in_second,
+                    static_cast<int>(sch.id), start, wrapped_start, size, total_samples_, k0_);
+            callbacks_.on_log(LogLevel::Info, log_msg);
+          }
+        }
+      }
+
+      // Update k0 for next call
+      k0_ = total_samples_;
+
+      if (!any) return;
+
+      populate_decode_metadata();
+
+      // Log decode parameters before calling decoder
+      if (callbacks_.on_log) {
+        char log_msg[512];
+        snprintf(log_msg, sizeof(log_msg),
+                "Calling legacy_decode: nsubmodes=0x%x, freq_range=%d-%d Hz, nfqso=%d Hz, sample_rate=%d, buffer_size=%zu, callback=%s",
+                decode_state_.params.nsubmodes, decode_state_.params.nfa,
+                decode_state_.params.nfb, decode_state_.params.nfqso,
+                config_.sample_rate_hz, decode_state_.samples.size(),
+                callbacks_.on_event ? "SET" : "NULL");
+        callbacks_.on_log(LogLevel::Info, log_msg);
+      }
+
+      std::size_t decode_count = legacy_decode(decode_state_, callbacks_.on_event);
+
+      if (callbacks_.on_log) {
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg),
+                "legacy_decode returned: %zu decodes", decode_count);
+        callbacks_.on_log(LogLevel::Info, log_msg);
+      }
+    }
+
+    static std::size_t next_pow2(std::size_t v) {
+      if (v == 0) return 1;
+      --v;
+      v |= v >> 1;
+      v |= v >> 2;
+      v |= v >> 4;
+      v |= v >> 8;
+      v |= v >> 16;
+#if INTPTR_MAX == INT64_MAX
+      v |= v >> 32;
+#endif
+      return v + 1;
+    }
+
+    static events::Spectrum compute_spectrum(const std::int16_t* data,
+                                             std::size_t frames,
+                                             int channels,
+                                             int sample_rate) {
+      events::Spectrum spec;
+      if (!data || frames == 0 || sample_rate <= 0) return spec;
+
+      // Limit FFT size for cost; keep it power of two for simplicity.
+      // Clamp to the largest power-of-two that fits in the provided frame count
+      // to avoid reading past the input buffer.
+      std::size_t max_n = std::min<std::size_t>(frames, 4096);
+      std::size_t n = max_n;
+      // Round down to the nearest power of two (<= max_n).
+      if (n > 0) {
+        n = next_pow2(n);
+        if (n > max_n) n >>= 1;
+      }
+      if (n < 64) return spec;
+
+      std::vector<double> window(n);
+      constexpr double two_pi = 2.0 * std::numbers::pi;
+      for (std::size_t i = 0; i < n; ++i) {
+        window[i] = 0.5 * (1.0 - std::cos(two_pi * static_cast<double>(i) / static_cast<double>(n - 1)));
+      }
+
+      // Mono mix: pick first channel.
+      std::vector<double> samples(n);
+      double power_sum = 0.0;
+      double peak = 0.0;
+      for (std::size_t i = 0; i < n; ++i) {
+        auto v = static_cast<double>(data[i * channels]);
+        power_sum += v * v;
+        peak = std::max(peak, std::abs(v));
+        samples[i] = v * window[i];
+      }
+
+      // In-place iterative radix-2 Cooley-Tukey FFT
+      std::vector<std::complex<double>> fft(n);
+      for (std::size_t i = 0; i < n; ++i) fft[i] = std::complex<double>(samples[i], 0.0);
+
+      // Bit reversal
+      for (std::size_t i = 1, j = 0; i < n; ++i) {
+        std::size_t bit = n >> 1;
+        for (; j & bit; bit >>= 1) j ^= bit;
+        j ^= bit;
+        if (i < j) std::swap(fft[i], fft[j]);
+      }
+
+      for (std::size_t len = 2; len <= n; len <<= 1) {
+        double ang = -two_pi / static_cast<double>(len);
+        std::complex<double> wlen(std::cos(ang), std::sin(ang));
+        for (std::size_t i = 0; i < n; i += len) {
+          std::complex<double> w(1.0, 0.0);
+          for (std::size_t j = 0; j < len / 2; ++j) {
+            auto u = fft[i + j];
+            auto v = fft[i + j + len / 2] * w;
+            fft[i + j] = u + v;
+            fft[i + j + len / 2] = u - v;
+            w *= wlen;
+          }
+        }
+      }
+
+      // Resample the spectrum to the bin count expected by the UI to avoid narrow plots.
+      constexpr std::size_t kTargetBins = JS8_NSMAX;
+      spec.bins.resize(kTargetBins);
+      double scale = 1.0 / static_cast<double>(n * n);
+      std::size_t source_bins = n / 2;
+      double source_bin_hz = static_cast<double>(sample_rate) / static_cast<double>(n);
+      double target_bin_hz = (static_cast<double>(sample_rate) / 2.0) / static_cast<double>(kTargetBins);
+
+      for (std::size_t i = 0; i < kTargetBins; ++i) {
+        double freq = static_cast<double>(i) * target_bin_hz;
+        double pos = freq / source_bin_hz;
+        std::size_t idx = static_cast<std::size_t>(pos);
+        double frac = pos - static_cast<double>(idx);
+        float v0 = idx < source_bins ? static_cast<float>(std::norm(fft[idx]) * scale) : 0.0f;
+        float v1 = (idx + 1 < source_bins) ? static_cast<float>(std::norm(fft[idx + 1]) * scale) : v0;
+        spec.bins[i] = v0 + static_cast<float>(frac) * (v1 - v0);
+      }
+
+      // Display axis: reflect the actual bin spacing of the resampled spectrum.
+      spec.bin_hz = static_cast<float>(target_bin_hz);
+      spec.power_db = power_sum > 0.0 ? static_cast<float>(10.0 * std::log10(power_sum / n)) : 0.0f;
+      spec.peak_db = peak > 0.0 ? static_cast<float>(20.0 * std::log10(peak)) : 0.0f;
+      return spec;
+    }
+
+    EngineConfig config_;
+    EngineCallbacks callbacks_;
+    EngineDependencies deps_;
+    DecodeState decode_state_;
+    SpectrumState spectrum_state_{};
+    std::vector<SubmodeSchedule> schedules_;
+    int total_samples_{0};
+    int k0_{0};  // Previous sample position for isDecodeReady logic
+    bool running_{false};
+  };
+
+}  // namespace
+
+std::unique_ptr<Js8Engine> make_engine(EngineConfig const& config,
+                                       EngineCallbacks callbacks,
+                                       EngineDependencies deps) {
+  return std::make_unique<Js8EngineImpl>(config, std::move(callbacks), deps);
+}
+
+}  // namespace js8core

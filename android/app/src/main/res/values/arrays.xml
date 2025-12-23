@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <!-- Sample Rate Options -->
+    <string-array name="sample_rate_entries">
+        <item>12000 Hz (Native)</item>
+        <item>48000 Hz (Resampled)</item>
+    </string-array>
+    <string-array name="sample_rate_values">
+        <item>12000</item>
+        <item>48000</item>
+    </string-array>
+
+    <!-- Rig Type Options -->
+    <string-array name="rig_type_entries">
+        <item>None</item>
+        <item>Network (rigctld/FlRig)</item>
+        <item>USB Serial (future)</item>
+    </string-array>
+    <string-array name="rig_type_values">
+        <item>none</item>
+        <item>network</item>
+        <item>usb</item>
+    </string-array>
+
+    <!-- Theme Options -->
+    <string-array name="theme_entries">
+        <item>Light</item>
+        <item>Dark</item>
+        <item>System Default</item>
+    </string-array>
+    <string-array name="theme_values">
+        <item>light</item>
+        <item>dark</item>
+        <item>system</item>
+    </string-array>
+</resources>

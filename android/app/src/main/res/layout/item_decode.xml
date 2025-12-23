@@ -1,0 +1,86 @@
+<?xml version="1.0" encoding="utf-8"?>
+<com.google.android.material.card.MaterialCardView xmlns:android="http://schemas.android.com/apk/res/android"
+    xmlns:app="http://schemas.android.com/apk/res-auto"
+    xmlns:tools="http://schemas.android.com/tools"
+    android:layout_width="match_parent"
+    android:layout_height="wrap_content"
+    android:layout_margin="4dp"
+    app:cardElevation="2dp">
+
+    <androidx.constraintlayout.widget.ConstraintLayout
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:padding="12dp">
+
+        <!-- SNR Indicator -->
+        <View
+            android:id="@+id/snr_indicator"
+            android:layout_width="4dp"
+            android:layout_height="0dp"
+            android:background="@color/snr_good"
+            app:layout_constraintBottom_toBottomOf="parent"
+            app:layout_constraintStart_toStartOf="parent"
+            app:layout_constraintTop_toTopOf="parent" />
+
+        <!-- Time -->
+        <TextView
+            android:id="@+id/time_text"
+            style="@style/MonospaceText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:textStyle="bold"
+            app:layout_constraintStart_toEndOf="@id/snr_indicator"
+            app:layout_constraintTop_toTopOf="parent"
+            tools:text="14:23" />
+
+        <!-- SNR Value -->
+        <TextView
+            android:id="@+id/snr_text"
+            style="@style/MonospaceText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            app:layout_constraintStart_toEndOf="@id/time_text"
+            app:layout_constraintTop_toTopOf="parent"
+            tools:text="+5 dB" />
+
+        <!-- DT Value -->
+        <TextView
+            android:id="@+id/dt_text"
+            style="@style/MonospaceText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            app:layout_constraintStart_toEndOf="@id/snr_text"
+            app:layout_constraintTop_toTopOf="parent"
+            tools:text="+0.2 s" />
+
+        <!-- Frequency -->
+        <TextView
+            android:id="@+id/freq_text"
+            style="@style/MonospaceText"
+            android:layout_width="wrap_content"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="12dp"
+            app:layout_constraintStart_toEndOf="@id/dt_text"
+            app:layout_constraintTop_toTopOf="parent"
+            tools:text="1234.5 Hz" />
+
+        <!-- Message Text -->
+        <TextView
+            android:id="@+id/message_text"
+            style="@style/MonospaceText"
+            android:layout_width="0dp"
+            android:layout_height="wrap_content"
+            android:layout_marginStart="8dp"
+            android:layout_marginTop="4dp"
+            android:textSize="13sp"
+            app:layout_constraintEnd_toEndOf="parent"
+            app:layout_constraintStart_toEndOf="@id/snr_indicator"
+            app:layout_constraintTop_toBottomOf="@id/time_text"
+            tools:text="CQ CQ CQ DE KN4CRD KN4CRD KN4CRD" />
+
+    </androidx.constraintlayout.widget.ConstraintLayout>
+
+</com.google.android.material.card.MaterialCardView>

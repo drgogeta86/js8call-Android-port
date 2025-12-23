@@ -1,0 +1,616 @@
+#include "js8_engine_jni.h"
+
+#include <android/log.h>
+#include <algorithm>
+#include <cmath>
+#include <cctype>
+#include <limits>
+#include <memory>
+#include <mutex>
+#include <string>
+#include <vector>
+
+#include "js8core/engine.hpp"
+#include "js8core/protocol/varicode.hpp"
+#include "js8core/android/audio_oboe.hpp"
+#include "js8core/android/logger_android.hpp"
+#include "js8core/android/network_android.hpp"
+#include "js8core/android/rig_android.hpp"
+#include "js8core/android/scheduler_android.hpp"
+#include "js8core/android/storage_android.hpp"
+
+// Forward declarations of JNI methods (defined in js8_jni_methods.cpp)
+extern "C" {
+JNIEXPORT jlong JNICALL Java_com_js8call_core_JS8Engine_00024Companion_nativeCreate(JNIEnv*, jobject, jobject, jint, jint);
+JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeStart(JNIEnv*, jobject, jlong);
+JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeStop(JNIEnv*, jobject, jlong);
+JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeDestroy(JNIEnv*, jobject, jlong);
+JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeSubmitAudio(JNIEnv*, jobject, jlong, jshortArray, jint, jlong);
+JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeSubmitAudioRaw(JNIEnv*, jobject, jlong, jshortArray, jint, jint, jlong);
+JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeSetFrequency(JNIEnv*, jobject, jlong, jlong);
+JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeSetSubmodes(JNIEnv*, jobject, jlong, jint);
+JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeIsRunning(JNIEnv*, jobject, jlong);
+}
+
+// Global JavaVM reference for callbacks
+static JavaVM* g_jvm = nullptr;
+
+// Engine wrapper that owns all adapter instances
+struct JS8Engine_Native {
+  std::unique_ptr<js8core::Js8Engine> engine;
+  std::unique_ptr<js8core::android::AndroidLogger> logger;
+  std::unique_ptr<js8core::android::FileStorage> storage;
+  std::unique_ptr<js8core::android::ThreadScheduler> scheduler;
+  std::unique_ptr<js8core::android::OboeAudioInput> audio_in;
+  std::unique_ptr<js8core::android::OboeAudioOutput> audio_out;
+  std::unique_ptr<js8core::android::BsdUdpChannel> udp;
+  std::unique_ptr<js8core::android::NullRigControl> rig;
+
+  // Java callback handler (global ref)
+  jobject callback_handler = nullptr;
+  std::mutex callback_mutex;
+
+  // Audio buffer for submission
+  js8core::AudioFormat audio_format;
+  std::vector<std::byte> audio_buffer;
+
+  // Decimation state for Java-side raw audio (e.g., 48 kHz -> 12 kHz)
+  int decimation_factor = 1;
+  int decimation_mirror = 0;
+  std::vector<float> decimation_taps;
+  std::vector<int16_t> decimation_buffer;
+  int decimation_pos = 0;
+};
+
+// Helper to get JNI environment for current thread
+static JNIEnv* get_jni_env() {
+  if (!g_jvm) return nullptr;
+
+  JNIEnv* env = nullptr;
+  int status = g_jvm->GetEnv((void**)&env, JNI_VERSION_1_6);
+
+  if (status == JNI_EDETACHED) {
+    // Attach current thread
+    status = g_jvm->AttachCurrentThread(&env, nullptr);
+    if (status != JNI_OK) {
+      return nullptr;
+    }
+  }
+
+  return env;
+}
+
+// Build a simple windowed-sinc low-pass FIR for integer decimation (matches native Oboe path).
+static std::vector<float> make_decimation_fir(int input_rate, int target_rate) {
+  // Match desktop detector FIR (48k -> 12k, Ntaps=49, fc=4.5 kHz, fstop=6 kHz).
+  if (input_rate == 48000 && target_rate == 12000) {
+    static const float kDesktopFIR[] = {
+        0.000861074040f,  0.010051920210f,  0.010161983649f,  0.011363155076f,
+        0.008706594219f,  0.002613872664f, -0.005202883094f, -0.011720748164f,
+        -0.013752163325f, -0.009431602741f,  0.000539063909f,  0.012636767098f,
+        0.021494659597f,  0.021951235065f,  0.011564169382f, -0.007656470131f,
+        -0.028965787341f, -0.042637874109f, -0.039203309748f, -0.013153301537f,
+         0.034320769178f,  0.094717832646f,  0.154224604789f,  0.197758325022f,
+         0.213715139513f,  0.197758325022f,  0.154224604789f,  0.094717832646f,
+         0.034320769178f, -0.013153301537f, -0.039203309748f, -0.042637874109f,
+        -0.028965787341f, -0.007656470131f,  0.011564169382f,  0.021951235065f,
+         0.021494659597f,  0.012636767098f,  0.000539063909f, -0.009431602741f,
+        -0.013752163325f, -0.011720748164f, -0.005202883094f,  0.002613872664f,
+         0.008706594219f,  0.011363155076f,  0.010161983649f,  0.010051920210f,
+         0.000861074040f};
+    return std::vector<float>(std::begin(kDesktopFIR), std::end(kDesktopFIR));
+  }
+
+  constexpr int kNumTaps = 32;
+  constexpr double kPi = 3.14159265358979323846;
+  const double cutoff = (0.5 * target_rate) / static_cast<double>(input_rate);
+
+  std::vector<float> taps(kNumTaps);
+  double sum = 0.0;
+
+  for (int i = 0; i < kNumTaps; ++i) {
+    const double n = i - (kNumTaps - 1) / 2.0;
+    const double sinc = (n == 0.0)
+                            ? 2.0 * cutoff
+                            : std::sin(2.0 * kPi * cutoff * n) / (kPi * n);
+    const double window = 0.54 - 0.46 * std::cos(2.0 * kPi * i / (kNumTaps - 1));
+    taps[i] = static_cast<float>(sinc * window);
+    sum += taps[i];
+  }
+
+  if (sum != 0.0) {
+    for (auto& t : taps) t = static_cast<float>(t / sum);
+  }
+
+  return taps;
+}
+
+// Render a human-readable JS8 message if possible; otherwise return the raw frame
+static std::string render_decoded_text(js8core::events::Decoded const& decoded) {
+  using namespace js8core::protocol::varicode;
+
+  auto const& frame = decoded.data;
+  if (frame.size() < 12 || frame.find(' ') != std::string::npos) {
+    return frame;
+  }
+
+  bool is_data_flag = (decoded.type & 0b100) == 0b100;
+  // Try data payloads first (mirrors desktop unpack order).
+  __android_log_print(ANDROID_LOG_DEBUG, "JS8FrameDebug",
+                      "Trying data unpacker: frame='%s', decoded.type=0x%02x",
+                      frame.c_str(), decoded.type);
+  if (is_data_flag) {
+    auto data = unpack_fast_data_message(frame);
+    __android_log_print(ANDROID_LOG_DEBUG, "JS8FrameDebug",
+                        "unpack_fast_data returned: '%s'", data.c_str());
+    if (!data.empty()) return data;
+    // Fast-data frames should not be treated as heartbeat/compound/directed.
+    __android_log_print(ANDROID_LOG_WARN, "JS8FrameDebug",
+                        "Fast data unpack failed, returning raw frame: '%s'", frame.c_str());
+    return frame;
+  } else {
+    auto data = unpack_data_message(frame);
+    __android_log_print(ANDROID_LOG_DEBUG, "JS8FrameDebug",
+                        "unpack_data returned: '%s'", data.c_str());
+    if (!data.empty()) return data;
+  }
+
+  // Heartbeat (most common for status beacons)
+  std::uint8_t hb_type = 0;
+  bool hb_alt = false;
+  std::uint8_t hb_bits3 = 0;
+  auto hb_parts = unpack_heartbeat_message(frame, &hb_type, &hb_alt, &hb_bits3);
+  if (!hb_parts.empty()) {
+    auto build_compound = [](std::vector<std::string> const& parts) {
+      std::string a = parts.size() > 0 ? parts[0] : "";
+      std::string b = parts.size() > 1 ? parts[1] : "";
+      if (!a.empty() && !b.empty()) return a + "/" + b;
+      return a.empty() ? b : a;
+    };
+
+    static const std::vector<std::string> kCqStrings = {
+        "CQ CQ CQ", "CQ DX", "CQ QRP", "CQ CONTEST",
+        "CQ FIELD", "CQ FD", "CQ CQ", "CQ"};
+
+    auto callsign = build_compound(hb_parts);
+    auto grid = hb_parts.size() > 2 ? hb_parts[2] : std::string{};
+
+    std::string text = callsign;
+    if (!text.empty()) text += ": ";
+
+    if (hb_alt) {
+      auto cq = hb_bits3 < kCqStrings.size() ? kCqStrings[hb_bits3] : std::string("CQ");
+      text += "@ALLCALL " + cq;
+    } else {
+      text += "@HB HEARTBEAT";
+    }
+    if (!grid.empty()) {
+      text += " " + grid;
+    }
+    return text;
+  }
+
+  // Compound (general CQ/MSG/grid/command) frames
+  {
+    std::uint8_t type = 0;
+    std::uint16_t num = 0;
+    std::uint8_t bits3 = 0;
+    auto parts = unpack_compound_message(frame, &type, &num, &bits3);
+    __android_log_print(ANDROID_LOG_DEBUG, "JS8FrameDebug",
+                        "unpack_compound: frame='%s', type=%d, parts.size=%zu",
+                        frame.c_str(), type, parts.size());
+    if (!parts.empty()) {
+      std::string out;
+      for (std::size_t i = 0; i < parts.size(); ++i) {
+        auto part = parts[i];
+        // Trim leading spaces from tail parts to avoid double spaces
+        while (!part.empty() && part.front() == ' ') part.erase(part.begin());
+        if (!part.empty()) {
+          if (!out.empty()) out += " ";
+          out += part;
+        }
+      }
+      if (!out.empty()) {
+        __android_log_print(ANDROID_LOG_WARN, "JS8FrameDebug",
+                            "Returning compound result: '%s' (should this be data?)", out.c_str());
+        return out;
+      }
+    }
+  }
+
+  // Directed frames (commands, directed messages)
+  {
+    std::uint8_t type = 0;
+    auto parts = unpack_directed_message(frame, &type);
+    if (!parts.empty()) {
+      std::string out;
+      for (std::size_t i = 0; i < parts.size(); ++i) {
+        auto part = parts[i];
+        while (!part.empty() && part.front() == ' ') part.erase(part.begin());
+        if (!part.empty()) {
+          if (!out.empty()) out += " ";
+          out += part;
+        }
+      }
+      if (!out.empty()) return out;
+    }
+  }
+
+  // Last resort: return raw frame
+  __android_log_print(ANDROID_LOG_WARN, "JS8FrameDebug",
+                      "All unpackers failed, returning raw frame: '%s'", frame.c_str());
+  return frame;
+}
+
+// Event callback that marshals C++ events to Java
+static void event_callback(JS8Engine_Native* native, js8core::events::Variant const& event) {
+  if (!native || !native->callback_handler) return;
+
+  JNIEnv* env = get_jni_env();
+  if (!env) return;
+
+  std::lock_guard<std::mutex> lock(native->callback_mutex);
+
+  // Get callback handler class
+  jclass handler_class = env->GetObjectClass(native->callback_handler);
+  if (!handler_class) return;
+
+  // Handle different event types
+  if (auto* decoded = std::get_if<js8core::events::Decoded>(&event)) {
+    auto rendered = render_decoded_text(*decoded);
+
+    auto emit_decoded = [&](js8core::events::Decoded const& d, std::string const& text_str) {
+      jmethodID method = env->GetMethodID(handler_class, "onDecoded", "(IIFFLjava/lang/String;IFI)V");
+      if (method) {
+        jstring text = env->NewStringUTF(text_str.c_str());
+        env->CallVoidMethod(native->callback_handler, method,
+                           d.utc, d.snr, d.xdt, d.frequency,
+                           text, d.type, d.quality, d.mode);
+        env->DeleteLocalRef(text);
+      }
+    };
+    emit_decoded(*decoded, rendered);
+  } else if (auto* spectrum = std::get_if<js8core::events::Spectrum>(&event)) {
+    // Call onSpectrum(float[] bins, float binHz, float powerDb, float peakDb)
+    jmethodID method = env->GetMethodID(handler_class, "onSpectrum", "([FFFF)V");
+    if (method) {
+      jfloatArray bins = env->NewFloatArray(static_cast<jsize>(spectrum->bins.size()));
+      env->SetFloatArrayRegion(bins, 0, static_cast<jsize>(spectrum->bins.size()),
+                               spectrum->bins.data());
+      env->CallVoidMethod(native->callback_handler, method,
+                         bins, spectrum->bin_hz, spectrum->power_db, spectrum->peak_db);
+      env->DeleteLocalRef(bins);
+    }
+  } else if (auto* decode_started = std::get_if<js8core::events::DecodeStarted>(&event)) {
+    // Call onDecodeStarted(int submodes)
+    jmethodID method = env->GetMethodID(handler_class, "onDecodeStarted", "(I)V");
+    if (method) {
+      env->CallVoidMethod(native->callback_handler, method, decode_started->submodes);
+    }
+  } else if (auto* decode_finished = std::get_if<js8core::events::DecodeFinished>(&event)) {
+    // Call onDecodeFinished(int count)
+    jmethodID method = env->GetMethodID(handler_class, "onDecodeFinished", "(I)V");
+    if (method) {
+      env->CallVoidMethod(native->callback_handler, method,
+                         static_cast<jint>(decode_finished->decoded));
+    }
+  }
+
+  env->DeleteLocalRef(handler_class);
+}
+
+// Error callback
+static void error_callback(JS8Engine_Native* native, std::string_view message) {
+  if (!native || !native->callback_handler) return;
+
+  JNIEnv* env = get_jni_env();
+  if (!env) return;
+
+  std::lock_guard<std::mutex> lock(native->callback_mutex);
+
+  jclass handler_class = env->GetObjectClass(native->callback_handler);
+  if (!handler_class) return;
+
+  jmethodID method = env->GetMethodID(handler_class, "onError", "(Ljava/lang/String;)V");
+  if (method) {
+    jstring msg = env->NewStringUTF(std::string(message).c_str());
+    env->CallVoidMethod(native->callback_handler, method, msg);
+    env->DeleteLocalRef(msg);
+  }
+
+  env->DeleteLocalRef(handler_class);
+}
+
+// Log callback
+static void log_callback(JS8Engine_Native* native, js8core::LogLevel level, std::string_view message) {
+  if (!native || !native->callback_handler) return;
+
+  JNIEnv* env = get_jni_env();
+  if (!env) return;
+
+  std::lock_guard<std::mutex> lock(native->callback_mutex);
+
+  jclass handler_class = env->GetObjectClass(native->callback_handler);
+  if (!handler_class) return;
+
+  jmethodID method = env->GetMethodID(handler_class, "onLog", "(ILjava/lang/String;)V");
+  if (method) {
+    jstring msg = env->NewStringUTF(std::string(message).c_str());
+    env->CallVoidMethod(native->callback_handler, method, static_cast<jint>(level), msg);
+    env->DeleteLocalRef(msg);
+  }
+
+  env->DeleteLocalRef(handler_class);
+}
+
+extern "C" {
+
+JS8Engine_Native* js8_engine_create(JNIEnv* env, jobject callback_handler,
+                                     int sample_rate_hz, int submodes) {
+  if (!env || !callback_handler) return nullptr;
+
+  auto native = new JS8Engine_Native();
+
+  // Create global reference to callback handler
+  native->callback_handler = env->NewGlobalRef(callback_handler);
+
+  // Create adapters
+  native->logger = std::make_unique<js8core::android::AndroidLogger>("JS8Call");
+
+  // Get app files directory for storage (should be passed from Java, using temp for now)
+  native->storage = std::make_unique<js8core::android::FileStorage>("/data/local/tmp/js8call");
+
+  native->scheduler = std::make_unique<js8core::android::ThreadScheduler>();
+  // Capture is driven from JS8AudioHelper (Java) with explicit resampling; disable native Oboe capture
+  native->audio_in = nullptr;
+  native->audio_out = std::make_unique<js8core::android::OboeAudioOutput>();
+  native->udp = std::make_unique<js8core::android::BsdUdpChannel>();
+  native->rig = std::make_unique<js8core::android::NullRigControl>();
+
+  // Configure engine
+  js8core::EngineConfig config;
+  config.sample_rate_hz = sample_rate_hz;
+  config.submodes = (submodes == 0) ? 0x1F : submodes;  // default to all standard submodes
+
+  js8core::EngineCallbacks callbacks;
+  callbacks.on_event = [native](js8core::events::Variant const& event) {
+    // Log event types for debugging
+    if (std::holds_alternative<js8core::events::DecodeStarted>(event)) {
+      auto const& e = std::get<js8core::events::DecodeStarted>(event);
+      __android_log_print(ANDROID_LOG_DEBUG, "JS8Engine_Native",
+                         "DecodeStarted: submodes=%d", e.submodes);
+    } else if (std::holds_alternative<js8core::events::DecodeFinished>(event)) {
+      auto const& e = std::get<js8core::events::DecodeFinished>(event);
+      __android_log_print(ANDROID_LOG_DEBUG, "JS8Engine_Native",
+                         "DecodeFinished: count=%zu", e.decoded);
+    } else if (std::holds_alternative<js8core::events::Decoded>(event)) {
+      auto const& e = std::get<js8core::events::Decoded>(event);
+      auto rendered = render_decoded_text(e);
+      __android_log_print(ANDROID_LOG_INFO, "JS8Engine_Native",
+                         "DECODED: SNR=%d dB, freq=%.1f Hz, text='%s', raw='%s', type=%d, mode=%d",
+                         e.snr, e.frequency, rendered.c_str(), e.data.c_str(), e.type, e.mode);
+    }
+    event_callback(native, event);
+  };
+  callbacks.on_error = [native](std::string_view msg) {
+    error_callback(native, msg);
+  };
+  callbacks.on_log = [native](js8core::LogLevel level, std::string_view msg) {
+    // Also log to Android logcat for debugging
+    int android_level = ANDROID_LOG_DEBUG;
+    switch (level) {
+      case js8core::LogLevel::Error: android_level = ANDROID_LOG_ERROR; break;
+      case js8core::LogLevel::Warn: android_level = ANDROID_LOG_WARN; break;
+      case js8core::LogLevel::Info: android_level = ANDROID_LOG_INFO; break;
+      case js8core::LogLevel::Debug: android_level = ANDROID_LOG_DEBUG; break;
+      case js8core::LogLevel::Trace: android_level = ANDROID_LOG_VERBOSE; break;
+    }
+    __android_log_print(android_level, "JS8Core",
+                       "%.*s", static_cast<int>(msg.length()), msg.data());
+    log_callback(native, level, msg);
+  };
+
+  js8core::EngineDependencies deps;
+  deps.audio_in = nullptr;  // Use Java-side capture instead of native Oboe
+  deps.audio_out = native->audio_out.get();
+  deps.rig = native->rig.get();
+  deps.scheduler = native->scheduler.get();
+  deps.storage = native->storage.get();
+  deps.logger = native->logger.get();
+  deps.udp = native->udp.get();
+
+  // Create engine
+  native->engine = js8core::make_engine(config, std::move(callbacks), deps);
+
+  // Set up audio format
+  native->audio_format.sample_rate = sample_rate_hz;
+  native->audio_format.channels = 1;  // Mono
+  native->audio_format.sample_type = js8core::SampleType::Int16;
+
+  return native;
+}
+
+void js8_engine_destroy(JS8Engine_Native* engine) {
+  if (!engine) return;
+
+  // Stop engine first
+  js8_engine_stop(engine);
+
+  // Delete global reference to callback handler
+  if (engine->callback_handler) {
+    JNIEnv* env = get_jni_env();
+    if (env) {
+      env->DeleteGlobalRef(engine->callback_handler);
+    }
+  }
+
+  delete engine;
+}
+
+int js8_engine_start(JS8Engine_Native* engine) {
+  if (!engine || !engine->engine) return 0;
+  return engine->engine->start() ? 1 : 0;
+}
+
+void js8_engine_stop(JS8Engine_Native* engine) {
+  if (!engine || !engine->engine) return;
+  engine->engine->stop();
+}
+
+int js8_engine_submit_audio(JS8Engine_Native* engine, const int16_t* samples,
+                            size_t num_samples, int64_t timestamp_ns) {
+  if (!engine || !engine->engine || !samples) return 0;
+
+  // Convert to byte span
+  size_t byte_size = num_samples * sizeof(int16_t);
+  const std::byte* byte_data = reinterpret_cast<const std::byte*>(samples);
+  std::span<const std::byte> data_span(byte_data, byte_size);
+
+  // Create audio buffer
+  js8core::AudioInputBuffer buffer;
+  buffer.data = data_span;
+  buffer.format = engine->audio_format;
+  buffer.captured_at = js8core::SteadyClock::now();
+
+  bool result = engine->engine->submit_capture(buffer);
+
+  // Log occasionally for debugging
+  static int submit_count = 0;
+  if ((submit_count++ % 500) == 0) {
+    __android_log_print(ANDROID_LOG_DEBUG, "JS8Engine_Native",
+                       "Audio submit #%d: %zu samples, result=%d, sample_rate=%d",
+                       submit_count, num_samples, result, engine->audio_format.sample_rate);
+  }
+
+  return result ? 1 : 0;
+}
+
+// Decimate raw input to the engine sample rate using the same FIR as native OboeAudioInput.
+int js8_engine_submit_audio_raw(JS8Engine_Native* engine, const int16_t* samples,
+                                size_t num_samples, int input_sample_rate,
+                                int64_t timestamp_ns) {
+  if (!engine || !engine->engine || !samples) return 0;
+  if (input_sample_rate <= 0) return 0;
+
+  int target_rate = engine->audio_format.sample_rate;
+  int factor = (target_rate > 0 && input_sample_rate % target_rate == 0)
+                   ? input_sample_rate / target_rate
+                   : 1;
+
+  // Rebuild taps/buffer if factor changed or not initialized.
+  if (factor != engine->decimation_factor || engine->decimation_taps.empty()) {
+    engine->decimation_factor = factor;
+    engine->decimation_taps = make_decimation_fir(input_sample_rate, target_rate);
+    engine->decimation_mirror = static_cast<int>(engine->decimation_taps.size());
+    engine->decimation_buffer.assign(engine->decimation_mirror * 2, 0);
+    engine->decimation_pos = 0;
+    __android_log_print(ANDROID_LOG_INFO, "JS8Engine_Native",
+                       "Decimator configured: input_rate=%d, target_rate=%d, factor=%d, taps=%zu",
+                       input_sample_rate, target_rate, factor, engine->decimation_taps.size());
+    if (target_rate > 0 && input_sample_rate % target_rate != 0) {
+      __android_log_print(ANDROID_LOG_WARN, "JS8Engine_Native",
+                         "Input rate %d not divisible by target %d; using fallback factor=1",
+                         input_sample_rate, target_rate);
+    }
+  }
+
+  std::vector<int16_t> decimated;
+  if (factor <= 1) {
+    decimated.assign(samples, samples + num_samples);
+  } else {
+    decimated.reserve(num_samples / static_cast<size_t>(factor) + 1);
+    int taps = static_cast<int>(engine->decimation_taps.size());
+    int mirror = engine->decimation_mirror;
+
+    for (size_t i = 0; i < num_samples; ++i) {
+      int16_t sample = samples[i];
+      engine->decimation_buffer[engine->decimation_pos] = sample;
+      engine->decimation_buffer[engine->decimation_pos + mirror] = sample;
+      engine->decimation_pos = (engine->decimation_pos + 1) % mirror;
+
+      if ((static_cast<int>(i) % factor) == factor - 1) {
+        double acc = 0.0;
+        int read_pos = (engine->decimation_pos - 1 + mirror) % mirror;
+        for (int j = 0; j < taps; ++j) {
+          int idx = (read_pos - j + mirror) % mirror;
+          acc += static_cast<double>(engine->decimation_taps[j]) *
+                 static_cast<double>(engine->decimation_buffer[idx]);
+        }
+        int value = static_cast<int>(std::lrint(acc));
+        value = std::clamp(value,
+                           static_cast<int>(std::numeric_limits<int16_t>::min()),
+                           static_cast<int>(std::numeric_limits<int16_t>::max()));
+        decimated.push_back(static_cast<int16_t>(value));
+      }
+    }
+  }
+
+  return js8_engine_submit_audio(engine, decimated.data(), decimated.size(), timestamp_ns);
+}
+
+void js8_engine_set_frequency(JS8Engine_Native* engine, uint64_t frequency_hz) {
+  // TODO: Implement frequency setting through engine API
+  (void)engine;
+  (void)frequency_hz;
+}
+
+void js8_engine_set_submodes(JS8Engine_Native* engine, int submodes) {
+  // TODO: Implement submode setting through engine API
+  (void)engine;
+  (void)submodes;
+}
+
+int js8_engine_is_running(JS8Engine_Native* engine) {
+  if (!engine || !engine->engine) return 0;
+  // TODO: Add is_running() method to engine interface
+  return 1;  // Assume running if engine exists
+}
+
+int js8_register_natives(JavaVM* vm, JNIEnv* env) {
+  g_jvm = vm;
+
+  // Register native methods for JS8Engine
+  jclass js8_engine_class = env->FindClass("com/js8call/core/JS8Engine");
+  if (!js8_engine_class) {
+    return 0;
+  }
+
+  // Map Kotlin Companion method to static method
+  JNINativeMethod methods[] = {
+    {"nativeCreate", "(Lcom/js8call/core/JS8Engine$CallbackHandler;II)J",
+     (void*)Java_com_js8call_core_JS8Engine_00024Companion_nativeCreate},
+    {"nativeStart", "(J)Z", (void*)Java_com_js8call_core_JS8Engine_nativeStart},
+    {"nativeStop", "(J)V", (void*)Java_com_js8call_core_JS8Engine_nativeStop},
+    {"nativeDestroy", "(J)V", (void*)Java_com_js8call_core_JS8Engine_nativeDestroy},
+    {"nativeSubmitAudio", "(J[SIJ)Z", (void*)Java_com_js8call_core_JS8Engine_nativeSubmitAudio},
+    {"nativeSubmitAudioRaw", "(J[SIIJ)Z", (void*)Java_com_js8call_core_JS8Engine_nativeSubmitAudioRaw},
+    {"nativeSetFrequency", "(JJ)V", (void*)Java_com_js8call_core_JS8Engine_nativeSetFrequency},
+    {"nativeSetSubmodes", "(JI)V", (void*)Java_com_js8call_core_JS8Engine_nativeSetSubmodes},
+    {"nativeIsRunning", "(J)Z", (void*)Java_com_js8call_core_JS8Engine_nativeIsRunning}
+  };
+
+  int num_methods = sizeof(methods) / sizeof(methods[0]);
+  if (env->RegisterNatives(js8_engine_class, methods, num_methods) != JNI_OK) {
+    return 0;
+  }
+
+  env->DeleteLocalRef(js8_engine_class);
+
+  return 1;
+}
+
+}  // extern "C"
+
+// JNI_OnLoad - called when library is loaded
+JNIEXPORT jint JNICALL JNI_OnLoad(JavaVM* vm, void* reserved) {
+  (void)reserved;
+
+  JNIEnv* env = nullptr;
+  if (vm->GetEnv((void**)&env, JNI_VERSION_1_6) != JNI_OK) {
+    return JNI_ERR;
+  }
+
+  js8_register_natives(vm, env);
+
+  return JNI_VERSION_1_6;
+}

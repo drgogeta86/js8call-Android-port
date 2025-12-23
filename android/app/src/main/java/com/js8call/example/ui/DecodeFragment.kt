@@ -1,0 +1,131 @@
+package com.js8call.example.ui
+
+import android.content.ClipData
+import android.content.ClipboardManager
+import android.content.Context
+import android.os.Bundle
+import android.view.LayoutInflater
+import android.view.View
+import android.view.ViewGroup
+import android.widget.TextView
+import androidx.fragment.app.Fragment
+import androidx.lifecycle.ViewModelProvider
+import androidx.recyclerview.widget.RecyclerView
+import com.google.android.material.dialog.MaterialAlertDialogBuilder
+import com.google.android.material.floatingactionbutton.FloatingActionButton
+import com.google.android.material.snackbar.Snackbar
+import com.js8call.example.R
+
+/**
+ * Fragment showing list of decoded messages.
+ */
+class DecodeFragment : Fragment() {
+
+    private lateinit var viewModel: DecodeViewModel
+    private lateinit var adapter: DecodeListAdapter
+
+    private lateinit var recyclerView: RecyclerView
+    private lateinit var emptyText: TextView
+    private lateinit var clearFab: FloatingActionButton
+
+    override fun onCreateView(
+        inflater: LayoutInflater,
+        container: ViewGroup?,
+        savedInstanceState: Bundle?
+    ): View? {
+        return inflater.inflate(R.layout.fragment_decodes, container, false)
+    }
+
+    override fun onViewCreated(view: View, savedInstanceState: Bundle?) {
+        super.onViewCreated(view, savedInstanceState)
+
+        // Initialize ViewModel (shared with MonitorFragment)
+        viewModel = ViewModelProvider(requireActivity())[DecodeViewModel::class.java]
+
+        // Find views
+        recyclerView = view.findViewById(R.id.decodes_recycler_view)
+        emptyText = view.findViewById(R.id.empty_text)
+        clearFab = view.findViewById(R.id.clear_fab)
+
+        // Set up RecyclerView
+        adapter = DecodeListAdapter().apply {
+            onItemClick = { decode ->
+                showDecodeOptions(decode)
+            }
+            onItemLongClick = { decode ->
+                copyToClipboard(decode.text)
+                true
+            }
+        }
+        recyclerView.adapter = adapter
+
+        // Set up FAB
+        clearFab.setOnClickListener {
+            confirmClearDecodes()
+        }
+
+        // Observe decodes
+        viewModel.decodes.observe(viewLifecycleOwner) { decodes ->
+            adapter.submitList(decodes)
+
+            // Show/hide empty state
+            if (decodes.isEmpty()) {
+                emptyText.visibility = View.VISIBLE
+                recyclerView.visibility = View.GONE
+            } else {
+                emptyText.visibility = View.GONE
+                recyclerView.visibility = View.VISIBLE
+
+                // Auto-scroll to top for new messages
+                recyclerView.scrollToPosition(0)
+            }
+        }
+    }
+
+    private fun showDecodeOptions(decode: com.js8call.example.model.DecodedMessage) {
+        val options = arrayOf(
+            getString(R.string.decodes_copy),
+            getString(R.string.decodes_reply)
+        )
+
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle(decode.formattedTime())
+            .setItems(options) { _, which ->
+                when (which) {
+                    0 -> copyToClipboard(decode.text)
+                    1 -> replyToMessage(decode)
+                }
+            }
+            .show()
+    }
+
+    private fun copyToClipboard(text: String) {
+        val clipboard = requireContext().getSystemService(Context.CLIPBOARD_SERVICE) as ClipboardManager
+        val clip = ClipData.newPlainText("JS8 Message", text)
+        clipboard.setPrimaryClip(clip)
+
+        Snackbar.make(requireView(), "Copied to clipboard", Snackbar.LENGTH_SHORT).show()
+    }
+
+    private fun replyToMessage(decode: com.js8call.example.model.DecodedMessage) {
+        // TODO: Extract callsign from message and switch to TX tab
+        // For now, just show a message
+        Snackbar.make(
+            requireView(),
+            "Reply to: ${decode.text}",
+            Snackbar.LENGTH_SHORT
+        ).show()
+    }
+
+    private fun confirmClearDecodes() {
+        MaterialAlertDialogBuilder(requireContext())
+            .setTitle("Clear All Decodes?")
+            .setMessage("This will remove all decoded messages from the list.")
+            .setPositiveButton("Clear") { _, _ ->
+                viewModel.clearDecodes()
+                Snackbar.make(requireView(), "Decodes cleared", Snackbar.LENGTH_SHORT).show()
+            }
+            .setNegativeButton("Cancel", null)
+            .show()
+    }
+}

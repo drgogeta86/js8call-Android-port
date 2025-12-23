@@ -1,0 +1,207 @@
+package com.js8call.core
+
+/**
+ * Native JS8Call engine wrapper for Android.
+ *
+ * This class provides a Kotlin-friendly interface to the native JS8 engine.
+ * It handles lifecycle management, audio processing, and event callbacks.
+ */
+class JS8Engine private constructor(
+    private var nativeHandle: Long,
+    private val callbackHandler: CallbackHandler
+) : AutoCloseable {
+
+    companion object {
+        init {
+            System.loadLibrary("js8core-jni")
+        }
+
+        /**
+         * Create a new JS8 engine instance.
+         *
+         * @param sampleRateHz Audio sample rate (typically 12000 or 48000)
+         * @param submodes Bitmask of enabled submodes
+         * @param callbackHandler Handler for engine events
+         */
+        fun create(
+            sampleRateHz: Int = 12000,
+            submodes: Int = 0x1F, // default to A/B/C/E/I like desktop
+            callbackHandler: CallbackHandler
+        ): JS8Engine {
+            val handle = nativeCreate(callbackHandler, sampleRateHz, submodes)
+            if (handle == 0L) {
+                throw RuntimeException("Failed to create native JS8 engine")
+            }
+            return JS8Engine(handle, callbackHandler)
+        }
+
+        @JvmStatic
+        private external fun nativeCreate(
+            callbackHandler: CallbackHandler,
+            sampleRateHz: Int,
+            submodes: Int
+        ): Long
+    }
+
+    /**
+     * Start the engine. Must be called before submitting audio.
+     */
+    fun start(): Boolean {
+        checkNotClosed()
+        return nativeStart(nativeHandle)
+    }
+
+    /**
+     * Stop the engine. Can be restarted later.
+     */
+    fun stop() {
+        if (nativeHandle != 0L) {
+            nativeStop(nativeHandle)
+        }
+    }
+
+    /**
+     * Submit audio samples for processing.
+     *
+     * @param samples Audio samples (16-bit PCM, mono)
+     * @param timestampNs Capture timestamp in nanoseconds
+     * @return true if successful
+     */
+    fun submitAudio(samples: ShortArray, timestampNs: Long = System.nanoTime()): Boolean {
+        checkNotClosed()
+        return nativeSubmitAudio(nativeHandle, samples, samples.size, timestampNs)
+    }
+
+    /**
+     * Submit raw audio at a higher rate; native code will decimate to the engine rate.
+     *
+     * @param samples   Audio samples (16-bit PCM, mono)
+     * @param numSamples Number of valid samples in the array
+     * @param inputSampleRateHz Sample rate of the input data (e.g., 48000)
+     * @param timestampNs Capture timestamp in nanoseconds
+     */
+    fun submitAudioRaw(
+        samples: ShortArray,
+        numSamples: Int,
+        inputSampleRateHz: Int,
+        timestampNs: Long = System.nanoTime()
+    ): Boolean {
+        checkNotClosed()
+        return nativeSubmitAudioRaw(nativeHandle, samples, numSamples, inputSampleRateHz, timestampNs)
+    }
+
+    /**
+     * Set the operating frequency.
+     *
+     * @param frequencyHz Frequency in Hz
+     */
+    fun setFrequency(frequencyHz: Long) {
+        checkNotClosed()
+        nativeSetFrequency(nativeHandle, frequencyHz)
+    }
+
+    /**
+     * Set enabled submodes.
+     *
+     * @param submodes Bitmask of enabled submodes
+     */
+    fun setSubmodes(submodes: Int) {
+        checkNotClosed()
+        nativeSetSubmodes(nativeHandle, submodes)
+    }
+
+    /**
+     * Check if engine is running.
+     */
+    fun isRunning(): Boolean {
+        return nativeHandle != 0L && nativeIsRunning(nativeHandle)
+    }
+
+    /**
+     * Close and destroy the engine. After calling this, the engine cannot be used.
+     */
+    override fun close() {
+        if (nativeHandle != 0L) {
+            nativeDestroy(nativeHandle)
+            nativeHandle = 0L
+        }
+    }
+
+    private fun checkNotClosed() {
+        if (nativeHandle == 0L) {
+            throw IllegalStateException("Engine has been closed")
+        }
+    }
+
+    // Native methods
+    private external fun nativeStart(handle: Long): Boolean
+    private external fun nativeStop(handle: Long)
+    private external fun nativeDestroy(handle: Long)
+    private external fun nativeSubmitAudio(
+        handle: Long,
+        samples: ShortArray,
+        numSamples: Int,
+        timestampNs: Long
+    ): Boolean
+    private external fun nativeSubmitAudioRaw(
+        handle: Long,
+        samples: ShortArray,
+        numSamples: Int,
+        inputSampleRateHz: Int,
+        timestampNs: Long
+    ): Boolean
+    private external fun nativeSetFrequency(handle: Long, frequencyHz: Long)
+    private external fun nativeSetSubmodes(handle: Long, submodes: Int)
+    private external fun nativeIsRunning(handle: Long): Boolean
+
+    /**
+     * Callback interface for engine events.
+     * All callbacks are invoked on a native thread.
+     */
+    interface CallbackHandler {
+        /**
+         * Called when a message is decoded.
+         */
+        fun onDecoded(
+            utc: Int,
+            snr: Int,
+            dt: Float,
+            freq: Float,
+            text: String,
+            type: Int,
+            quality: Float,
+            mode: Int
+        )
+
+        /**
+         * Called with spectrum/waterfall data.
+         */
+        fun onSpectrum(
+            bins: FloatArray,
+            binHz: Float,
+            powerDb: Float,
+            peakDb: Float
+        )
+
+        /**
+         * Called when decode cycle starts.
+         */
+        fun onDecodeStarted(submodes: Int)
+
+        /**
+         * Called when decode cycle finishes.
+         */
+        fun onDecodeFinished(count: Int)
+
+        /**
+         * Called on engine errors.
+         */
+        fun onError(message: String)
+
+        /**
+         * Called for log messages.
+         * @param level 0=Trace, 1=Debug, 2=Info, 3=Warn, 4=Error
+         */
+        fun onLog(level: Int, message: String)
+    }
+}

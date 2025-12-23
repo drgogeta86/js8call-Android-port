@@ -1,0 +1,77 @@
+package com.js8call.example.model
+
+import com.js8call.example.R
+
+/**
+ * Represents a decoded JS8 message.
+ */
+data class DecodedMessage(
+    val utc: Int,
+    val snr: Int,
+    val dt: Float,
+    val frequency: Float,
+    val text: String,
+    val type: Int,
+    val quality: Float,
+    val mode: Int,
+    val timestamp: Long = System.currentTimeMillis()
+) {
+    /**
+     * Check if this frame is marked as the first frame of a multipart message.
+     * JS8CallFirst flag is bit 0 (type & 1).
+     */
+    fun isFirstFrame(): Boolean = (type and 1) != 0
+
+    /**
+     * Check if this frame is marked as the last frame of a multipart message.
+     * JS8CallLast flag is bit 1 (type & 2).
+     */
+    fun isLastFrame(): Boolean = (type and 2) != 0
+
+    /**
+     * Check if this is a single-frame message (not part of a multipart sequence).
+     * Type 0 means no flags set, Type 3 means both first and last (complete single frame).
+     */
+    fun isSingleFrame(): Boolean = type == 0 || type == 3
+
+    /**
+     * Get color resource ID based on SNR level.
+     */
+    val snrColorRes: Int
+        get() = when {
+            snr >= 10 -> R.color.snr_excellent   // >= +10 dB
+            snr >= 0 -> R.color.snr_good         // 0 to +9 dB
+            snr >= -5 -> R.color.snr_fair        // -5 to -1 dB
+            snr >= -10 -> R.color.snr_poor       // -10 to -6 dB
+            else -> R.color.snr_weak             // < -10 dB
+        }
+
+    /**
+     * Format as display string.
+     */
+    fun toDisplayString(): String {
+        return String.format(
+            "%04d  %+3d dB  %+5.1f s  %7.1f Hz  %s",
+            utc, snr, dt, frequency, text
+        )
+    }
+
+    /**
+     * Format time as HH:MM from UTC.
+     */
+    fun formattedTime(): String {
+        val hours = utc / 100
+        val minutes = utc % 100
+        return String.format("%02d:%02d", hours, minutes)
+    }
+}
+
+/**
+ * Buffer for accumulating multipart message frames.
+ * Groups frames by frequency to assemble complete messages.
+ */
+data class MessageBuffer(
+    val frames: MutableList<DecodedMessage>,
+    val firstTimestamp: Long,
+    val frequencyKey: Int
+)

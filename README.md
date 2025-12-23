@@ -1,7 +1,19 @@
+#CURRENTLY THE ANDROID PORT IS *WILDLY* BETA. The interface has many parts that are stubbed and do NOT function in any way. Currently only the decoder works. The design of the GUI *WILL* change. Not responsible for this code doing unexpected things, draining all of your batteries, or kidnapping your pets. User beware. 
+
 # JS8Call-improved
 JS8Call-improved is continued development of the original JS8Call project. Most of the same developers have worked on both projects. With JS8Call-improved we are able to implement bug fixes and features must faster so development can proceed at a faster pace.
 
 Like JS8Call, JS8Call-improved is licensed under the GPLv3, the Qt libraries used by JS8Call-improved are licensed under the LGPL. See [LICENSE](LICENSE) for the details. All copyrights remain with the original holders. Source code for JS8Call-improved is [here](https://github.com/JS8Call-improved/JS8Call-improved)
+
+## Android Port Summary
+
+- Extracted a platform-agnostic core engine under `core/` with public headers in `core/include` and protocol/DSP implementations in `core/src`.
+- Added an Android adapter layer in `adapters/android/` plus a JNI bridge in `adapters/android/jni` (native `js8_engine_jni.cpp` with Kotlin/Java wrappers).
+- Introduced a Gradle/NDK build in `android/` with the `js8core-lib` AAR module and `app` example, including FFTW3 build scripting in `android/build-fftw3.sh`.
+- Implemented a foreground decoding service (`JS8EngineService`) and AudioRecord capture via `JS8AudioHelper`, with UI updates delivered through local broadcasts.
+- Built a Material 3 Android UI (Monitor, Decodes, Transmit, Settings) with ViewModel-backed decode buffering for multipart messages.
+
+See `android/README.md` for build and usage details, and `android/ENGINE_INTEGRATION_COMPLETE.md` for the end-to-end architecture notes.
 
 # Building JS8Call-improved From Sourcecode
 Instructions can be found in [docs](docs) in the source tree for building JS8Call on MacOS, Linux and Windows, as well as a contributor's guide.
