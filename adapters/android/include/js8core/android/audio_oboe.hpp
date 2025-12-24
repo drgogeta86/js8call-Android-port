@@ -52,6 +52,8 @@ public:
   OboeAudioOutput();
   ~OboeAudioOutput() override;
 
+  void set_device_id(int device_id);
+
   // AudioOutput interface
   bool start(AudioStreamParams const& params,
              AudioOutputFill fill,
@@ -69,6 +71,7 @@ private:
   AudioOutputFill fill_;
   AudioErrorHandler on_error_;
   std::mutex mutex_;
+  int device_id_ = 0;
 };
 
 #else
@@ -84,6 +87,7 @@ public:
 
 class OboeAudioOutput : public AudioOutput {
 public:
+  void set_device_id(int) {}
   bool start(AudioStreamParams const&, AudioOutputFill, AudioErrorHandler) override {
     return false;
   }

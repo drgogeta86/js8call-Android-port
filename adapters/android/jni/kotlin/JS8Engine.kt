@@ -111,10 +111,96 @@ class JS8Engine private constructor(
     }
 
     /**
+     * Set the preferred output audio device ID (0 or negative for default).
+     */
+    fun setOutputDevice(deviceId: Int) {
+        checkNotClosed()
+        nativeSetOutputDevice(nativeHandle, deviceId)
+    }
+
+    /**
      * Check if engine is running.
      */
     fun isRunning(): Boolean {
         return nativeHandle != 0L && nativeIsRunning(nativeHandle)
+    }
+
+    /**
+     * Transmit a text message by building JS8 frames and scheduling audio output.
+     */
+    fun transmitMessage(
+        text: String,
+        myCall: String,
+        myGrid: String,
+        selectedCall: String = "",
+        submode: Int = 0,
+        audioFrequencyHz: Double,
+        txDelaySec: Double = 0.0,
+        forceIdentify: Boolean = false,
+        forceData: Boolean = false
+    ): Boolean {
+        checkNotClosed()
+        return nativeTransmitMessage(
+            nativeHandle,
+            text,
+            myCall,
+            myGrid,
+            selectedCall,
+            submode,
+            audioFrequencyHz,
+            txDelaySec,
+            forceIdentify,
+            forceData
+        )
+    }
+
+    /**
+     * Transmit a pre-encoded 12-character frame with JS8 bit flags.
+     */
+    fun transmitFrame(
+        frame: String,
+        bits: Int,
+        submode: Int,
+        audioFrequencyHz: Double,
+        txDelaySec: Double = 0.0
+    ): Boolean {
+        checkNotClosed()
+        return nativeTransmitFrame(
+            nativeHandle,
+            frame,
+            bits,
+            submode,
+            audioFrequencyHz,
+            txDelaySec
+        )
+    }
+
+    /**
+     * Start a tuning tone at the given audio frequency.
+     */
+    fun startTune(
+        audioFrequencyHz: Double,
+        submode: Int,
+        txDelaySec: Double = 0.0
+    ): Boolean {
+        checkNotClosed()
+        return nativeStartTune(nativeHandle, audioFrequencyHz, submode, txDelaySec)
+    }
+
+    /**
+     * Stop any active transmission or tuning tone.
+     */
+    fun stopTransmit() {
+        if (nativeHandle != 0L) {
+            nativeStopTransmit(nativeHandle)
+        }
+    }
+
+    /**
+     * Check if a transmission is currently active.
+     */
+    fun isTransmitting(): Boolean {
+        return nativeHandle != 0L && nativeIsTransmitting(nativeHandle)
     }
 
     /**
@@ -152,7 +238,36 @@ class JS8Engine private constructor(
     ): Boolean
     private external fun nativeSetFrequency(handle: Long, frequencyHz: Long)
     private external fun nativeSetSubmodes(handle: Long, submodes: Int)
+    private external fun nativeSetOutputDevice(handle: Long, deviceId: Int)
     private external fun nativeIsRunning(handle: Long): Boolean
+    private external fun nativeTransmitMessage(
+        handle: Long,
+        text: String,
+        myCall: String,
+        myGrid: String,
+        selectedCall: String,
+        submode: Int,
+        audioFrequencyHz: Double,
+        txDelaySec: Double,
+        forceIdentify: Boolean,
+        forceData: Boolean
+    ): Boolean
+    private external fun nativeTransmitFrame(
+        handle: Long,
+        frame: String,
+        bits: Int,
+        submode: Int,
+        audioFrequencyHz: Double,
+        txDelaySec: Double
+    ): Boolean
+    private external fun nativeStartTune(
+        handle: Long,
+        audioFrequencyHz: Double,
+        submode: Int,
+        txDelaySec: Double
+    ): Boolean
+    private external fun nativeStopTransmit(handle: Long)
+    private external fun nativeIsTransmitting(handle: Long): Boolean
 
     /**
      * Callback interface for engine events.

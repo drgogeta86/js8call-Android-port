@@ -1,8 +1,20 @@
 #include <jni.h>
 #include <android/log.h>
+#include <string>
 #include "js8_engine_jni.h"
 
 // JNI method implementations for com.js8call.core.JS8Engine
+
+namespace {
+std::string to_utf8(JNIEnv* env, jstring value) {
+  if (!env || !value) return {};
+  const char* chars = env->GetStringUTFChars(value, nullptr);
+  if (!chars) return {};
+  std::string out(chars);
+  env->ReleaseStringUTFChars(value, chars);
+  return out;
+}
+}  // namespace
 
 extern "C" {
 
@@ -131,6 +143,108 @@ Java_com_js8call_core_JS8Engine_nativeSetSubmodes(
     jint submodes) {
   JS8Engine_Native* engine = reinterpret_cast<JS8Engine_Native*>(handle);
   js8_engine_set_submodes(engine, submodes);
+}
+
+JNIEXPORT void JNICALL
+Java_com_js8call_core_JS8Engine_nativeSetOutputDevice(
+    JNIEnv* /* env */,
+    jobject /* thiz */,
+    jlong handle,
+    jint device_id) {
+  JS8Engine_Native* engine = reinterpret_cast<JS8Engine_Native*>(handle);
+  js8_engine_set_output_device(engine, static_cast<int>(device_id));
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_js8call_core_JS8Engine_nativeTransmitMessage(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jlong handle,
+    jstring text,
+    jstring my_call,
+    jstring my_grid,
+    jstring selected_call,
+    jint submode,
+    jdouble audio_frequency_hz,
+    jdouble tx_delay_s,
+    jboolean force_identify,
+    jboolean force_data) {
+  JS8Engine_Native* engine = reinterpret_cast<JS8Engine_Native*>(handle);
+  auto text_utf8 = to_utf8(env, text);
+  auto my_call_utf8 = to_utf8(env, my_call);
+  auto my_grid_utf8 = to_utf8(env, my_grid);
+  auto selected_call_utf8 = to_utf8(env, selected_call);
+
+  int result = js8_engine_transmit_message(
+      engine,
+      text_utf8.c_str(),
+      my_call_utf8.c_str(),
+      my_grid_utf8.c_str(),
+      selected_call_utf8.c_str(),
+      static_cast<int>(submode),
+      static_cast<double>(audio_frequency_hz),
+      static_cast<double>(tx_delay_s),
+      force_identify ? 1 : 0,
+      force_data ? 1 : 0);
+
+  return result ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_js8call_core_JS8Engine_nativeTransmitFrame(
+    JNIEnv* env,
+    jobject /* thiz */,
+    jlong handle,
+    jstring frame,
+    jint bits,
+    jint submode,
+    jdouble audio_frequency_hz,
+    jdouble tx_delay_s) {
+  JS8Engine_Native* engine = reinterpret_cast<JS8Engine_Native*>(handle);
+  auto frame_utf8 = to_utf8(env, frame);
+  int result = js8_engine_transmit_frame(
+      engine,
+      frame_utf8.c_str(),
+      static_cast<int>(bits),
+      static_cast<int>(submode),
+      static_cast<double>(audio_frequency_hz),
+      static_cast<double>(tx_delay_s));
+  return result ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_js8call_core_JS8Engine_nativeStartTune(
+    JNIEnv* /* env */,
+    jobject /* thiz */,
+    jlong handle,
+    jdouble audio_frequency_hz,
+    jint submode,
+    jdouble tx_delay_s) {
+  JS8Engine_Native* engine = reinterpret_cast<JS8Engine_Native*>(handle);
+  int result = js8_engine_start_tune(
+      engine,
+      static_cast<double>(audio_frequency_hz),
+      static_cast<int>(submode),
+      static_cast<double>(tx_delay_s));
+  return result ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT void JNICALL
+Java_com_js8call_core_JS8Engine_nativeStopTransmit(
+    JNIEnv* /* env */,
+    jobject /* thiz */,
+    jlong handle) {
+  JS8Engine_Native* engine = reinterpret_cast<JS8Engine_Native*>(handle);
+  js8_engine_stop_transmit(engine);
+}
+
+JNIEXPORT jboolean JNICALL
+Java_com_js8call_core_JS8Engine_nativeIsTransmitting(
+    JNIEnv* /* env */,
+    jobject /* thiz */,
+    jlong handle) {
+  JS8Engine_Native* engine = reinterpret_cast<JS8Engine_Native*>(handle);
+  return js8_engine_is_transmitting(engine) ? JNI_TRUE : JNI_FALSE;
 }
 
 JNIEXPORT jboolean JNICALL

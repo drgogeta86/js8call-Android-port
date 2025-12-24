@@ -45,6 +45,10 @@
     <string name="tx_queue_empty">Transmit queue empty</string>
     <string name="tx_mode">Mode</string>
     <string name="tx_speed">Speed</string>
+    <string name="tx_speed_slow">Slow</string>
+    <string name="tx_speed_normal">Normal</string>
+    <string name="tx_speed_fast">Fast</string>
+    <string name="tx_speed_turbo">Turbo</string>
     <string name="tx_power">Power</string>
     <string name="tx_status_idle">Ready to transmit</string>
     <string name="tx_status_queued">Message queued</string>

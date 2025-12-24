@@ -7,8 +7,10 @@ import android.view.LayoutInflater
 import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
-import android.widget.EditText
 import android.widget.TextView
+import android.content.Intent
+import android.widget.ArrayAdapter
+import android.widget.AutoCompleteTextView
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.RecyclerView
@@ -16,6 +18,7 @@ import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.textfield.TextInputEditText
 import com.js8call.example.R
 import com.js8call.example.model.TransmitState
+import com.js8call.example.service.JS8EngineService
 
 /**
  * Fragment for composing and transmitting messages.
@@ -31,6 +34,8 @@ class TransmitFragment : Fragment() {
     private lateinit var queueRecyclerView: RecyclerView
     private lateinit var queueEmptyText: TextView
     private lateinit var txStatusText: TextView
+    private lateinit var speedSelect: AutoCompleteTextView
+    private var selectedSubmode: Int = SUBMODE_NORMAL
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -54,9 +59,11 @@ class TransmitFragment : Fragment() {
         queueRecyclerView = view.findViewById(R.id.queue_recycler_view)
         queueEmptyText = view.findViewById(R.id.queue_empty_text)
         txStatusText = view.findViewById(R.id.tx_status_text)
+        speedSelect = view.findViewById(R.id.tx_speed_select)
 
         // Set up listeners
         setupListeners()
+        setupSpeedSelector()
 
         // Observe ViewModel
         observeViewModel()
@@ -91,6 +98,31 @@ class TransmitFragment : Fragment() {
         // Send button
         sendButton.setOnClickListener {
             sendMessage()
+        }
+    }
+
+    private fun setupSpeedSelector() {
+        val speedOptions = listOf(
+            SpeedOption(getString(R.string.tx_speed_slow), SUBMODE_SLOW),
+            SpeedOption(getString(R.string.tx_speed_normal), SUBMODE_NORMAL),
+            SpeedOption(getString(R.string.tx_speed_fast), SUBMODE_FAST),
+            SpeedOption(getString(R.string.tx_speed_turbo), SUBMODE_TURBO)
+        )
+
+        val adapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_list_item_1,
+            speedOptions.map { it.label }
+        )
+        speedSelect.setAdapter(adapter)
+
+        val defaultIndex = speedOptions.indexOfFirst { it.submode == SUBMODE_NORMAL }
+            .takeIf { it >= 0 } ?: 0
+        speedSelect.setText(speedOptions[defaultIndex].label, false)
+        selectedSubmode = speedOptions[defaultIndex].submode
+
+        speedSelect.setOnItemClickListener { _, _, position, _ ->
+            selectedSubmode = speedOptions.getOrNull(position)?.submode ?: SUBMODE_NORMAL
         }
     }
 
@@ -141,6 +173,17 @@ class TransmitFragment : Fragment() {
         // Queue the message
         viewModel.queueMessage(text, directed)
 
+        // Trigger native TX via the engine service
+        val txIntent = Intent(requireContext(), JS8EngineService::class.java).apply {
+            action = JS8EngineService.ACTION_TRANSMIT_MESSAGE
+            putExtra(JS8EngineService.EXTRA_TX_TEXT, text)
+            putExtra(JS8EngineService.EXTRA_TX_SUBMODE, selectedSubmode)
+            if (directed != null) {
+                putExtra(JS8EngineService.EXTRA_TX_DIRECTED, directed)
+            }
+        }
+        requireContext().startService(txIntent)
+
         // Show confirmation
         val message = if (directed != null) {
             "Message queued for $directed"
@@ -148,5 +191,14 @@ class TransmitFragment : Fragment() {
             "Message queued"
         }
         Snackbar.make(requireView(), message, Snackbar.LENGTH_SHORT).show()
+    }
+
+    private data class SpeedOption(val label: String, val submode: Int)
+
+    companion object {
+        private const val SUBMODE_NORMAL = 0
+        private const val SUBMODE_FAST = 1
+        private const val SUBMODE_TURBO = 2
+        private const val SUBMODE_SLOW = 4
     }
 }

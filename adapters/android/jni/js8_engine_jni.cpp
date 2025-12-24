@@ -12,6 +12,7 @@
 
 #include "js8core/engine.hpp"
 #include "js8core/protocol/varicode.hpp"
+#include "js8core/dsp/resampler.hpp"
 #include "js8core/android/audio_oboe.hpp"
 #include "js8core/android/logger_android.hpp"
 #include "js8core/android/network_android.hpp"
@@ -29,7 +30,13 @@ JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeSubmitAudio(JNI
 JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeSubmitAudioRaw(JNIEnv*, jobject, jlong, jshortArray, jint, jint, jlong);
 JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeSetFrequency(JNIEnv*, jobject, jlong, jlong);
 JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeSetSubmodes(JNIEnv*, jobject, jlong, jint);
+JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeSetOutputDevice(JNIEnv*, jobject, jlong, jint);
 JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeIsRunning(JNIEnv*, jobject, jlong);
+JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeTransmitMessage(JNIEnv*, jobject, jlong, jstring, jstring, jstring, jstring, jint, jdouble, jdouble, jboolean, jboolean);
+JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeTransmitFrame(JNIEnv*, jobject, jlong, jstring, jint, jint, jdouble, jdouble);
+JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeStartTune(JNIEnv*, jobject, jlong, jdouble, jint, jdouble);
+JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeStopTransmit(JNIEnv*, jobject, jlong);
+JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeIsTransmitting(JNIEnv*, jobject, jlong);
 }
 
 // Global JavaVM reference for callbacks
@@ -78,51 +85,6 @@ static JNIEnv* get_jni_env() {
   }
 
   return env;
-}
-
-// Build a simple windowed-sinc low-pass FIR for integer decimation (matches native Oboe path).
-static std::vector<float> make_decimation_fir(int input_rate, int target_rate) {
-  // Match desktop detector FIR (48k -> 12k, Ntaps=49, fc=4.5 kHz, fstop=6 kHz).
-  if (input_rate == 48000 && target_rate == 12000) {
-    static const float kDesktopFIR[] = {
-        0.000861074040f,  0.010051920210f,  0.010161983649f,  0.011363155076f,
-        0.008706594219f,  0.002613872664f, -0.005202883094f, -0.011720748164f,
-        -0.013752163325f, -0.009431602741f,  0.000539063909f,  0.012636767098f,
-        0.021494659597f,  0.021951235065f,  0.011564169382f, -0.007656470131f,
-        -0.028965787341f, -0.042637874109f, -0.039203309748f, -0.013153301537f,
-         0.034320769178f,  0.094717832646f,  0.154224604789f,  0.197758325022f,
-         0.213715139513f,  0.197758325022f,  0.154224604789f,  0.094717832646f,
-         0.034320769178f, -0.013153301537f, -0.039203309748f, -0.042637874109f,
-        -0.028965787341f, -0.007656470131f,  0.011564169382f,  0.021951235065f,
-         0.021494659597f,  0.012636767098f,  0.000539063909f, -0.009431602741f,
-        -0.013752163325f, -0.011720748164f, -0.005202883094f,  0.002613872664f,
-         0.008706594219f,  0.011363155076f,  0.010161983649f,  0.010051920210f,
-         0.000861074040f};
-    return std::vector<float>(std::begin(kDesktopFIR), std::end(kDesktopFIR));
-  }
-
-  constexpr int kNumTaps = 32;
-  constexpr double kPi = 3.14159265358979323846;
-  const double cutoff = (0.5 * target_rate) / static_cast<double>(input_rate);
-
-  std::vector<float> taps(kNumTaps);
-  double sum = 0.0;
-
-  for (int i = 0; i < kNumTaps; ++i) {
-    const double n = i - (kNumTaps - 1) / 2.0;
-    const double sinc = (n == 0.0)
-                            ? 2.0 * cutoff
-                            : std::sin(2.0 * kPi * cutoff * n) / (kPi * n);
-    const double window = 0.54 - 0.46 * std::cos(2.0 * kPi * i / (kNumTaps - 1));
-    taps[i] = static_cast<float>(sinc * window);
-    sum += taps[i];
-  }
-
-  if (sum != 0.0) {
-    for (auto& t : taps) t = static_cast<float>(t / sum);
-  }
-
-  return taps;
 }
 
 // Render a human-readable JS8 message if possible; otherwise return the raw frame
@@ -371,6 +333,8 @@ JS8Engine_Native* js8_engine_create(JNIEnv* env, jobject callback_handler,
   js8core::EngineConfig config;
   config.sample_rate_hz = sample_rate_hz;
   config.submodes = (submodes == 0) ? 0x1F : submodes;  // default to all standard submodes
+  config.tx_output_rate_hz = 0;  // Use device native output rate and resample
+  config.tx_output_gain = 0.2f;  // Leave headroom to avoid splatter/ALC
 
   js8core::EngineCallbacks callbacks;
   callbacks.on_event = [native](js8core::events::Variant const& event) {
@@ -500,7 +464,7 @@ int js8_engine_submit_audio_raw(JS8Engine_Native* engine, const int16_t* samples
   // Rebuild taps/buffer if factor changed or not initialized.
   if (factor != engine->decimation_factor || engine->decimation_taps.empty()) {
     engine->decimation_factor = factor;
-    engine->decimation_taps = make_decimation_fir(input_sample_rate, target_rate);
+    engine->decimation_taps = js8core::dsp::make_js8_fir(input_sample_rate, target_rate);
     engine->decimation_mirror = static_cast<int>(engine->decimation_taps.size());
     engine->decimation_buffer.assign(engine->decimation_mirror * 2, 0);
     engine->decimation_pos = 0;
@@ -560,6 +524,73 @@ void js8_engine_set_submodes(JS8Engine_Native* engine, int submodes) {
   (void)submodes;
 }
 
+void js8_engine_set_output_device(JS8Engine_Native* engine, int device_id) {
+  if (!engine || !engine->audio_out) return;
+  engine->audio_out->set_device_id(device_id);
+}
+
+int js8_engine_transmit_message(JS8Engine_Native* engine,
+                                const char* text,
+                                const char* my_call,
+                                const char* my_grid,
+                                const char* selected_call,
+                                int submode,
+                                double audio_frequency_hz,
+                                double tx_delay_s,
+                                int force_identify,
+                                int force_data) {
+  if (!engine || !engine->engine) return 0;
+
+  js8core::TxMessageRequest request;
+  request.text = text ? text : "";
+  request.my_call = my_call ? my_call : "";
+  request.my_grid = my_grid ? my_grid : "";
+  request.selected_call = selected_call ? selected_call : "";
+  request.submode = submode;
+  request.audio_frequency_hz = audio_frequency_hz;
+  request.tx_delay_s = tx_delay_s;
+  request.force_identify = force_identify != 0;
+  request.force_data = force_data != 0;
+
+  return engine->engine->transmit_message(request) ? 1 : 0;
+}
+
+int js8_engine_transmit_frame(JS8Engine_Native* engine,
+                              const char* frame,
+                              int bits,
+                              int submode,
+                              double audio_frequency_hz,
+                              double tx_delay_s) {
+  if (!engine || !engine->engine || !frame) return 0;
+
+  js8core::TxFrameRequest request;
+  request.frame = frame;
+  request.bits = bits;
+  request.submode = submode;
+  request.audio_frequency_hz = audio_frequency_hz;
+  request.tx_delay_s = tx_delay_s;
+
+  return engine->engine->transmit_frame(request) ? 1 : 0;
+}
+
+int js8_engine_start_tune(JS8Engine_Native* engine,
+                          double audio_frequency_hz,
+                          int submode,
+                          double tx_delay_s) {
+  if (!engine || !engine->engine) return 0;
+  return engine->engine->start_tune(audio_frequency_hz, submode, tx_delay_s) ? 1 : 0;
+}
+
+void js8_engine_stop_transmit(JS8Engine_Native* engine) {
+  if (!engine || !engine->engine) return;
+  engine->engine->stop_transmit();
+}
+
+int js8_engine_is_transmitting(JS8Engine_Native* engine) {
+  if (!engine || !engine->engine) return 0;
+  return engine->engine->is_transmitting() ? 1 : 0;
+}
+
 int js8_engine_is_running(JS8Engine_Native* engine) {
   if (!engine || !engine->engine) return 0;
   // TODO: Add is_running() method to engine interface
@@ -586,6 +617,17 @@ int js8_register_natives(JavaVM* vm, JNIEnv* env) {
     {"nativeSubmitAudioRaw", "(J[SIIJ)Z", (void*)Java_com_js8call_core_JS8Engine_nativeSubmitAudioRaw},
     {"nativeSetFrequency", "(JJ)V", (void*)Java_com_js8call_core_JS8Engine_nativeSetFrequency},
     {"nativeSetSubmodes", "(JI)V", (void*)Java_com_js8call_core_JS8Engine_nativeSetSubmodes},
+    {"nativeSetOutputDevice", "(JI)V", (void*)Java_com_js8call_core_JS8Engine_nativeSetOutputDevice},
+    {"nativeTransmitMessage", "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IDDZZ)Z",
+     (void*)Java_com_js8call_core_JS8Engine_nativeTransmitMessage},
+    {"nativeTransmitFrame", "(JLjava/lang/String;IIDD)Z",
+     (void*)Java_com_js8call_core_JS8Engine_nativeTransmitFrame},
+    {"nativeStartTune", "(JDID)Z",
+     (void*)Java_com_js8call_core_JS8Engine_nativeStartTune},
+    {"nativeStopTransmit", "(J)V",
+     (void*)Java_com_js8call_core_JS8Engine_nativeStopTransmit},
+    {"nativeIsTransmitting", "(J)Z",
+     (void*)Java_com_js8call_core_JS8Engine_nativeIsTransmitting},
     {"nativeIsRunning", "(J)Z", (void*)Java_com_js8call_core_JS8Engine_nativeIsRunning}
   };
 

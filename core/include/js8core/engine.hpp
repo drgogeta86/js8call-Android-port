@@ -70,6 +70,28 @@ using Variant = std::variant<DecodeStarted, SyncStart, SyncState, Decoded, Decod
 struct EngineConfig {
   int sample_rate_hz = 0;
   int submodes = 0;
+  int tx_output_rate_hz = 48000;
+  float tx_output_gain = 1.0f;
+};
+
+struct TxMessageRequest {
+  std::string text;
+  std::string my_call;
+  std::string my_grid;
+  std::string selected_call;
+  int submode = 0;
+  double audio_frequency_hz = 0.0;
+  double tx_delay_s = 0.0;
+  bool force_identify = false;
+  bool force_data = false;
+};
+
+struct TxFrameRequest {
+  std::string frame;
+  int bits = 0;
+  int submode = 0;
+  double audio_frequency_hz = 0.0;
+  double tx_delay_s = 0.0;
 };
 
 struct EngineCallbacks {
@@ -96,6 +118,12 @@ public:
   virtual void stop() = 0;
 
   virtual bool submit_capture(AudioInputBuffer const& buffer) = 0;
+
+  virtual bool transmit_message(TxMessageRequest const& request) = 0;
+  virtual bool transmit_frame(TxFrameRequest const& request) = 0;
+  virtual bool start_tune(double audio_frequency_hz, int submode, double tx_delay_s) = 0;
+  virtual void stop_transmit() = 0;
+  virtual bool is_transmitting() const = 0;
 };
 
 std::unique_ptr<Js8Engine> make_engine(EngineConfig const& config,

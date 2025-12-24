@@ -841,16 +841,23 @@ std::string pack_compound_message(std::string const& text, int* n) {
     return {};
   }
 
+  bool validGrid = !grid.empty() && std::regex_match(grid, kGridPattern);
+  auto cmd_it = std::find_if(kDirectedCmds.begin(), kDirectedCmds.end(), [&](auto const& dc) { return dc.key == cmd; });
+  bool validCmd = (cmd_it != kDirectedCmds.end()) && is_command_allowed(cmd);
+  if (!validGrid && !validCmd) {
+    if (n) *n = 0;
+    return {};
+  }
+
   std::uint8_t type = static_cast<std::uint8_t>(FrameType::FrameCompound);
   std::uint16_t extra = static_cast<std::uint16_t>(nmaxgrid);
 
-  auto cmd_it = std::find_if(kDirectedCmds.begin(), kDirectedCmds.end(), [&](auto const& dc) { return dc.key == cmd; });
-  if (cmd_it != kDirectedCmds.end() && is_command_allowed(cmd)) {
+  if (validCmd) {
     bool packedNum = false;
     auto inum = pack_num_qtstyle(num, nullptr);
     extra = static_cast<std::uint16_t>(nusergrid + pack_cmd(static_cast<std::uint8_t>(cmd_it->value), static_cast<std::uint8_t>(inum), &packedNum));
     type = static_cast<std::uint8_t>(FrameType::FrameCompoundDirected);
-  } else if (!grid.empty()) {
+  } else if (validGrid) {
     extra = pack_grid(grid);
   }
 

@@ -5,60 +5,11 @@
 #include <limits>
 #include <android/log.h>
 
+#include "js8core/dsp/resampler.hpp"
+
 #ifdef __ANDROID__
 
 namespace js8core::android {
-
-namespace {
-// Build a simple windowed-sinc low-pass FIR for integer decimation.
-std::vector<float> make_decimation_fir(int input_rate, int target_rate) {
-  // Match desktop detector FIR when downsampling 48k -> 12k.
-  if (input_rate == 48000 && target_rate == 12000) {
-    static const float kDesktopFIR[] = {
-        0.000861074040f,  0.010051920210f,  0.010161983649f,  0.011363155076f,
-        0.008706594219f,  0.002613872664f, -0.005202883094f, -0.011720748164f,
-        -0.013752163325f, -0.009431602741f,  0.000539063909f,  0.012636767098f,
-        0.021494659597f,  0.021951235065f,  0.011564169382f, -0.007656470131f,
-        -0.028965787341f, -0.042637874109f, -0.039203309748f, -0.013153301537f,
-         0.034320769178f,  0.094717832646f,  0.154224604789f,  0.197758325022f,
-         0.213715139513f,  0.197758325022f,  0.154224604789f,  0.094717832646f,
-         0.034320769178f, -0.013153301537f, -0.039203309748f, -0.042637874109f,
-        -0.028965787341f, -0.007656470131f,  0.011564169382f,  0.021951235065f,
-         0.021494659597f,  0.012636767098f,  0.000539063909f, -0.009431602741f,
-        -0.013752163325f, -0.011720748164f, -0.005202883094f,  0.002613872664f,
-         0.008706594219f,  0.011363155076f,  0.010161983649f,  0.010051920210f,
-         0.000861074040f};
-    return std::vector<float>(std::begin(kDesktopFIR), std::end(kDesktopFIR));
-  }
-
-  // Cutoff near the target Nyquist
-  constexpr int kNumTaps = 32;
-  constexpr double kPi = 3.14159265358979323846;
-  const double cutoff = (0.5 * target_rate) / static_cast<double>(input_rate);
-
-  std::vector<float> taps(kNumTaps);
-  double sum = 0.0;
-
-  for (int i = 0; i < kNumTaps; ++i) {
-    const double n = i - (kNumTaps - 1) / 2.0;
-    const double sinc = (n == 0.0)
-                            ? 2.0 * cutoff
-                            : std::sin(2.0 * kPi * cutoff * n) /
-                                  (kPi * n);
-    const double window =
-        0.54 - 0.46 * std::cos(2.0 * kPi * i / (kNumTaps - 1));
-    taps[i] = static_cast<float>(sinc * window);
-    sum += taps[i];
-  }
-
-  // Normalize unity gain at DC
-  if (sum != 0.0) {
-    for (auto& t : taps) t = static_cast<float>(t / sum);
-  }
-
-  return taps;
-}
-}  // namespace
 
 // ============================================================================
 // OboeAudioInput
@@ -134,7 +85,7 @@ bool OboeAudioInput::start(AudioStreamParams const& params,
     if (decimation_factor_ > 1 &&
         params_.format.sample_type == SampleType::Int16) {
       fir_taps_ =
-          make_decimation_fir(actual_sample_rate_, params_.format.sample_rate);
+          js8core::dsp::make_js8_fir(actual_sample_rate_, params_.format.sample_rate);
       fir_buffer_.assign(fir_taps_.size() * 2, 0);
       fir_pos_ = 0;
       __android_log_print(ANDROID_LOG_INFO, "JS8AudioInput",
@@ -241,6 +192,11 @@ OboeAudioOutput::~OboeAudioOutput() {
   stop();
 }
 
+void OboeAudioOutput::set_device_id(int device_id) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  device_id_ = device_id > 0 ? device_id : 0;
+}
+
 bool OboeAudioOutput::start(AudioStreamParams const& params,
                             AudioOutputFill fill,
                             AudioErrorHandler on_error) {
@@ -258,9 +214,16 @@ bool OboeAudioOutput::start(AudioStreamParams const& params,
   builder.setDirection(oboe::Direction::Output)
       ->setPerformanceMode(oboe::PerformanceMode::LowLatency)
       ->setSharingMode(oboe::SharingMode::Exclusive)
-      ->setSampleRate(params.format.sample_rate)
       ->setChannelCount(params.format.channels)
       ->setDataCallback(this);
+
+  if (device_id_ > 0) {
+    builder.setDeviceId(device_id_);
+  }
+
+  if (params.format.sample_rate > 0) {
+    builder.setSampleRate(params.format.sample_rate);
+  }
 
   // Set format
   if (params.format.sample_type == SampleType::Int16) {
@@ -290,6 +253,16 @@ bool OboeAudioOutput::start(AudioStreamParams const& params,
     }
     stream_.reset();
     return false;
+  }
+
+  // Update format with actual stream properties
+  params_.format.sample_rate = stream_->getSampleRate();
+  params_.format.channels = stream_->getChannelCount();
+  auto actual_format = stream_->getFormat();
+  if (actual_format == oboe::AudioFormat::Float) {
+    params_.format.sample_type = SampleType::Float32;
+  } else if (actual_format == oboe::AudioFormat::I16) {
+    params_.format.sample_type = SampleType::Int16;
   }
 
   return true;

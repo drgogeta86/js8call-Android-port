@@ -1,11 +1,17 @@
 #include "js8core/engine.hpp"
 
 #include <algorithm>
+#include <atomic>
+#include <array>
 #include <cmath>
 #include <complex>
 #include <cstring>
+#include <deque>
 #include "js8core/compat/numbers.hpp"
+#include <mutex>
+#include <optional>
 #include <span>
+#include <string>
 #include <utility>
 #include <vector>
 
@@ -16,12 +22,34 @@
 #include "commons.h"
 #include "js8core/decoder_state.hpp"
 #include "js8core/decoder_bridge.hpp"
+#include "js8core/decoder.hpp"
+#include "js8core/dsp/resampler.hpp"
+#include "js8core/protocol/costas.hpp"
+#include "js8core/protocol/constants.hpp"
 #include "js8core/protocol/submode.hpp"
+#include "js8core/protocol/varicode.hpp"
 #include "js8core/types.hpp"
+#include "js8core/tx/modulator.hpp"
 
 namespace js8core {
 
 namespace {
+
+std::optional<protocol::Submode> submode_from_varicode(int submode) {
+  using protocol::SubmodeId;
+  switch (submode) {
+    case 0:  return protocol::find(SubmodeId::A); // Normal
+    case 1:  return protocol::find(SubmodeId::B); // Fast
+    case 2:  return protocol::find(SubmodeId::C); // Turbo
+    case 4:  return protocol::find(SubmodeId::E); // Slow
+    case 8:  return protocol::find(SubmodeId::I); // Ultra
+    default: return protocol::find(SubmodeId::A);
+  }
+}
+
+protocol::CostasType costas_from_varicode(int submode) {
+  return submode == 0 ? protocol::CostasType::Original : protocol::CostasType::Modified;
+}
 
 class Js8EngineImpl : public Js8Engine {
 public:
@@ -105,8 +133,8 @@ public:
 
   void stop() override {
     running_ = false;
+    stop_transmit();
     if (deps_.audio_in) deps_.audio_in->stop();
-    if (deps_.audio_out) deps_.audio_out->stop();
     if (deps_.rig) deps_.rig->stop();
   }
 
@@ -167,6 +195,146 @@ public:
     return true;
   }
 
+  bool transmit_message(TxMessageRequest const& request) override {
+    auto sm = submode_from_varicode(request.submode);
+    if (!sm) return false;
+
+    protocol::varicode::MessageInfo info;
+    auto frames = protocol::varicode::build_message_frames(
+        request.my_call,
+        request.my_grid,
+        request.selected_call,
+        request.text,
+        request.force_identify,
+        request.force_data,
+        request.submode,
+        &info);
+
+    if (frames.empty()) return false;
+
+    std::deque<TxFrame> built;
+    built.resize(frames.size());
+    auto costas = protocol::costas(costas_from_varicode(request.submode));
+
+    for (std::size_t i = 0; i < frames.size(); ++i) {
+      auto const& frame = frames[i].first;
+      if (frame.size() < 12) continue;
+      TxFrame tx_frame;
+      tx_frame.bits = frames[i].second;
+      tx_frame.frame = frame.substr(0, 12);
+      legacy_encode(tx_frame.bits, costas, tx_frame.frame.c_str(), tx_frame.tones.data());
+      built[i] = std::move(tx_frame);
+    }
+
+    {
+      std::lock_guard<std::mutex> lock(tx_mutex_);
+      tx_queue_.clear();
+      for (auto& frame : built) {
+        if (!frame.frame.empty()) {
+          tx_queue_.push_back(std::move(frame));
+        }
+      }
+      if (tx_queue_.empty()) return false;
+
+      tx_settings_.submode = request.submode;
+      tx_settings_.audio_frequency_hz = request.audio_frequency_hz;
+      tx_settings_.tx_delay_s = request.tx_delay_s;
+      tx_settings_.tuning = false;
+      tx_active_ = true;
+
+      tx_modulator_.stop();
+      tx_resampler_.reset();
+      start_next_frame_locked();
+    }
+
+    if (!start_tx_output()) {
+      stop_transmit();
+      return false;
+    }
+    return true;
+  }
+
+  bool transmit_frame(TxFrameRequest const& request) override {
+    auto sm = submode_from_varicode(request.submode);
+    if (!sm) return false;
+    if (request.frame.size() < 12) return false;
+
+    TxFrame frame;
+    frame.bits = request.bits;
+    frame.frame = request.frame.substr(0, 12);
+    auto costas = protocol::costas(costas_from_varicode(request.submode));
+    legacy_encode(frame.bits, costas, frame.frame.c_str(), frame.tones.data());
+
+    {
+      std::lock_guard<std::mutex> lock(tx_mutex_);
+      tx_queue_.clear();
+      tx_queue_.push_back(std::move(frame));
+      tx_settings_.submode = request.submode;
+      tx_settings_.audio_frequency_hz = request.audio_frequency_hz;
+      tx_settings_.tx_delay_s = request.tx_delay_s;
+      tx_settings_.tuning = false;
+      tx_active_ = true;
+
+      tx_modulator_.stop();
+      tx_resampler_.reset();
+      start_next_frame_locked();
+    }
+
+    if (!start_tx_output()) {
+      stop_transmit();
+      return false;
+    }
+    return true;
+  }
+
+  bool start_tune(double audio_frequency_hz, int submode, double tx_delay_s) override {
+    auto sm = submode_from_varicode(submode);
+    if (!sm) return false;
+
+    {
+      std::lock_guard<std::mutex> lock(tx_mutex_);
+      tx_queue_.clear();
+      tx_settings_.submode = submode;
+      tx_settings_.audio_frequency_hz = audio_frequency_hz;
+      tx_settings_.tx_delay_s = tx_delay_s;
+      tx_settings_.tuning = true;
+      tx_active_ = true;
+
+      tx_resampler_.reset();
+      std::array<int, protocol::kJs8NumSymbols> tones{};
+      tx_modulator_.start(tones,
+                          sm->symbol_samples,
+                          sm->start_delay_ms,
+                          sm->tx_seconds * 1000,
+                          tx_settings_.audio_frequency_hz,
+                          tx_settings_.tx_delay_s,
+                          true);
+    }
+
+    if (!start_tx_output()) {
+      stop_transmit();
+      return false;
+    }
+    return true;
+  }
+
+  void stop_transmit() override {
+    std::lock_guard<std::mutex> lock(tx_mutex_);
+    tx_active_ = false;
+    tx_queue_.clear();
+    tx_settings_.tuning = false;
+    tx_modulator_.stop();
+    tx_resampler_.reset();
+    if (deps_.audio_out && tx_output_started_) {
+      deps_.audio_out->stop();
+      tx_output_started_ = false;
+    }
+  }
+
+  bool is_transmitting() const override {
+    return tx_active_;
+  }
+
 private:
     struct SubmodeSchedule {
       protocol::SubmodeId id;
@@ -177,6 +345,19 @@ private:
       int current_decode_start = -1;  // Absolute position in buffer for current decode window
       int next_decode_start = -1;     // Absolute position in buffer for next decode window
       int next_start = 0;  // Keep for compatibility (unused now)
+    };
+
+    struct TxFrame {
+      std::array<int, protocol::kJs8NumSymbols> tones{};
+      int bits = 0;
+      std::string frame;
+    };
+
+    struct TxSettings {
+      int submode = 0;
+      double audio_frequency_hz = 0.0;
+      double tx_delay_s = 0.0;
+      bool tuning = false;
     };
 
     void init_schedules() {
@@ -480,6 +661,148 @@ private:
       }
     }
 
+    bool start_tx_output() {
+      if (!deps_.audio_out || tx_output_started_) return true;
+
+      AudioStreamParams params;
+      params.format.sample_rate = config_.tx_output_rate_hz;
+      params.format.channels = 1;
+      params.format.sample_type = SampleType::Int16;
+
+      bool ok = deps_.audio_out->start(
+          params,
+          [this](AudioOutputBuffer& buffer) { return render_tx_audio(buffer); },
+          [this](std::string_view msg) {
+            if (callbacks_.on_error) callbacks_.on_error(msg);
+          });
+
+      if (!ok && callbacks_.on_error) {
+        callbacks_.on_error("Failed to start audio output");
+      }
+      tx_output_started_ = ok;
+      return ok;
+    }
+
+    std::size_t render_tx_audio(AudioOutputBuffer& buffer) {
+      std::size_t bytes_per_sample = buffer.format.sample_type == SampleType::Float32
+                                         ? sizeof(float)
+                                         : sizeof(std::int16_t);
+      if (bytes_per_sample == 0 || buffer.format.channels <= 0) return 0;
+
+      std::size_t frames = buffer.data.size() / (bytes_per_sample * static_cast<std::size_t>(buffer.format.channels));
+      if (frames == 0) return 0;
+
+      int output_rate = buffer.format.sample_rate;
+      if (output_rate <= 0) {
+        std::fill(buffer.data.begin(), buffer.data.end(), std::byte{0});
+        return buffer.data.size();
+      }
+
+      std::lock_guard<std::mutex> lock(tx_mutex_);
+
+      if (!tx_output_logged_ && callbacks_.on_log) {
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg),
+                 "TX output format: rate=%d Hz, channels=%d, type=%s",
+                 output_rate,
+                 buffer.format.channels,
+                 buffer.format.sample_type == SampleType::Float32 ? "float" : "int16");
+        callbacks_.on_log(LogLevel::Info, log_msg);
+        tx_output_logged_ = true;
+      }
+
+      if (tx_resampler_.input_rate() != protocol::kJs8RxSampleRate ||
+          tx_resampler_.output_rate() != output_rate) {
+        tx_resampler_.configure(protocol::kJs8RxSampleRate, output_rate);
+      }
+
+      if (tx_float_buffer_.size() < frames) {
+        tx_float_buffer_.resize(frames);
+      }
+
+      tx_resampler_.process(std::span<float>(tx_float_buffer_.data(), frames),
+                            [this]() { return next_tx_sample_locked(); });
+
+      float gain = std::clamp(config_.tx_output_gain, 0.0f, 1.0f);
+      if (gain != 1.0f) {
+        for (std::size_t i = 0; i < frames; ++i) {
+          tx_float_buffer_[i] *= gain;
+        }
+      }
+
+      if (callbacks_.on_log && (++tx_log_counter_ % 1000 == 0)) {
+        double sum_squares = 0.0;
+        for (std::size_t i = 0; i < frames; ++i) {
+          double v = static_cast<double>(tx_float_buffer_[i]);
+          sum_squares += v * v;
+        }
+        double rms = frames > 0 ? std::sqrt(sum_squares / static_cast<double>(frames)) : 0.0;
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg),
+                 "TX audio: frames=%zu, rms=%.4f, active=%d, tuning=%d, queue=%zu",
+                 frames, rms, tx_active_ ? 1 : 0, tx_settings_.tuning ? 1 : 0,
+                 tx_queue_.size());
+        callbacks_.on_log(LogLevel::Info, log_msg);
+      }
+
+      if (buffer.format.sample_type == SampleType::Float32) {
+        auto* out = reinterpret_cast<float*>(buffer.data.data());
+        for (std::size_t i = 0; i < frames; ++i) {
+          float v = tx_float_buffer_[i];
+          for (int ch = 0; ch < buffer.format.channels; ++ch) {
+            *out++ = v;
+          }
+        }
+        return frames * bytes_per_sample * static_cast<std::size_t>(buffer.format.channels);
+      }
+
+      auto* out = reinterpret_cast<std::int16_t*>(buffer.data.data());
+      for (std::size_t i = 0; i < frames; ++i) {
+        float v = std::clamp(tx_float_buffer_[i], -1.0f, 1.0f);
+        auto sample = static_cast<std::int16_t>(std::lround(v * 32767.0f));
+        for (int ch = 0; ch < buffer.format.channels; ++ch) {
+          *out++ = sample;
+        }
+      }
+      return frames * bytes_per_sample * static_cast<std::size_t>(buffer.format.channels);
+    }
+
+    float next_tx_sample_locked() {
+      if (!tx_active_) return 0.0f;
+
+      if (tx_modulator_.is_idle()) {
+        if (!tx_queue_.empty()) {
+          start_next_frame_locked();
+        } else if (!tx_settings_.tuning) {
+          tx_active_ = false;
+          return 0.0f;
+        }
+      }
+
+      return tx_modulator_.next_sample();
+    }
+
+    void start_next_frame_locked() {
+      if (tx_queue_.empty()) return;
+      auto sm = submode_from_varicode(tx_settings_.submode);
+      if (!sm) {
+        tx_queue_.clear();
+        tx_active_ = false;
+        return;
+      }
+
+      TxFrame frame = std::move(tx_queue_.front());
+      tx_queue_.pop_front();
+
+      tx_modulator_.start(frame.tones,
+                          sm->symbol_samples,
+                          sm->start_delay_ms,
+                          sm->tx_seconds * 1000,
+                          tx_settings_.audio_frequency_hz,
+                          tx_settings_.tx_delay_s,
+                          tx_settings_.tuning);
+    }
+
     static std::size_t next_pow2(std::size_t v) {
       if (v == 0) return 1;
       --v;
@@ -591,6 +914,16 @@ private:
     int total_samples_{0};
     int k0_{0};  // Previous sample position for isDecodeReady logic
     bool running_{false};
+    std::mutex tx_mutex_;
+    std::deque<TxFrame> tx_queue_;
+    TxSettings tx_settings_{};
+    tx::Modulator tx_modulator_;
+    dsp::Resampler tx_resampler_;
+    std::vector<float> tx_float_buffer_;
+    int tx_log_counter_ = 0;
+    bool tx_output_logged_ = false;
+    std::atomic<bool> tx_active_{false};
+    bool tx_output_started_{false};
   };
 
 }  // namespace

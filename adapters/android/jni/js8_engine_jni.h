@@ -24,6 +24,31 @@ int js8_engine_submit_audio_raw(JS8Engine_Native* engine, const int16_t* samples
 // Configuration
 void js8_engine_set_frequency(JS8Engine_Native* engine, uint64_t frequency_hz);
 void js8_engine_set_submodes(JS8Engine_Native* engine, int submodes);
+void js8_engine_set_output_device(JS8Engine_Native* engine, int device_id);
+
+// Transmit control
+int js8_engine_transmit_message(JS8Engine_Native* engine,
+                                const char* text,
+                                const char* my_call,
+                                const char* my_grid,
+                                const char* selected_call,
+                                int submode,
+                                double audio_frequency_hz,
+                                double tx_delay_s,
+                                int force_identify,
+                                int force_data);
+int js8_engine_transmit_frame(JS8Engine_Native* engine,
+                              const char* frame,
+                              int bits,
+                              int submode,
+                              double audio_frequency_hz,
+                              double tx_delay_s);
+int js8_engine_start_tune(JS8Engine_Native* engine,
+                          double audio_frequency_hz,
+                          int submode,
+                          double tx_delay_s);
+void js8_engine_stop_transmit(JS8Engine_Native* engine);
+int js8_engine_is_transmitting(JS8Engine_Native* engine);
 
 // Status queries
 int js8_engine_is_running(JS8Engine_Native* engine);

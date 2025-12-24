@@ -21,6 +21,7 @@ EngineBundle make_engine_bundle(Transceiver* rig, EngineCallbacks callbacks, int
 
   EngineConfig cfg;
   cfg.sample_rate_hz = sample_rate_hz;
+  cfg.tx_output_rate_hz = sample_rate_hz * 4;
 
   EngineDependencies deps;
   deps.audio_in = bundle.audio_in.get();

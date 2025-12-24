@@ -15,6 +15,7 @@ import android.os.Looper
 import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import androidx.preference.PreferenceManager
 import com.js8call.core.JS8AudioHelper
 import com.js8call.core.JS8Engine
 import com.js8call.example.MainActivity
@@ -32,6 +33,7 @@ class JS8EngineService : Service() {
     private var audioHelper: JS8AudioHelper? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private var selectedAudioDeviceId: Int = -1  // -1 means use default
+    private var selectedOutputDeviceId: Int = -1  // -1 means use default
 
     override fun onCreate() {
         super.onCreate()
@@ -60,6 +62,9 @@ class JS8EngineService : Service() {
                 val deviceId = intent.getIntExtra(EXTRA_AUDIO_DEVICE_ID, -1)
                 Log.i(TAG, "Switching audio device to ID: $deviceId")
                 switchAudioDevice(deviceId)
+            }
+            ACTION_TRANSMIT_MESSAGE -> {
+                handleTransmitMessage(intent)
             }
         }
         return START_STICKY
@@ -198,6 +203,8 @@ class JS8EngineService : Service() {
             // Start engine
             if (engine?.start() == true) {
                 Log.i(TAG, "Engine started successfully")
+
+                updateOutputDeviceForInput(selectedAudioDeviceId)
 
                 // Start audio capture with selected device (if any)
                 audioHelper = JS8AudioHelper(engine!!, 12000, selectedAudioDeviceId, applicationContext)
@@ -341,6 +348,72 @@ class JS8EngineService : Service() {
         return "Microphone"
     }
 
+    private fun updateOutputDeviceForInput(inputDeviceId: Int) {
+        val outputId = findOutputDeviceId(inputDeviceId)
+        selectedOutputDeviceId = outputId
+        engine?.setOutputDevice(outputId)
+        if (outputId > 0) {
+            Log.i(TAG, "Using output device: ${getOutputDeviceName(outputId)} (ID: $outputId)")
+        } else {
+            Log.i(TAG, "Using default output device")
+        }
+    }
+
+    private fun findOutputDeviceId(inputDeviceId: Int): Int {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return -1
+        if (inputDeviceId == -1) return -1
+
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val inputDevice = audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .firstOrNull { it.id == inputDeviceId } ?: return -1
+
+        val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val inputName = inputDevice.productName?.toString()?.takeIf { it.isNotBlank() }
+        val inputFamily = deviceFamily(inputDevice.type)
+
+        var output = if (inputName != null) {
+            outputs.firstOrNull { device ->
+                device.productName?.toString() == inputName &&
+                    (inputFamily.isEmpty() || deviceFamily(device.type) == inputFamily)
+            }
+        } else {
+            null
+        }
+
+        if (output == null && inputName != null) {
+            output = outputs.firstOrNull { device -> device.productName?.toString() == inputName }
+        }
+
+        if (output == null && inputFamily.isNotEmpty()) {
+            output = outputs.firstOrNull { device -> deviceFamily(device.type) == inputFamily }
+        }
+
+        return output?.id ?: -1
+    }
+
+    private fun deviceFamily(type: Int): String {
+        return when (type) {
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY,
+            AudioDeviceInfo.TYPE_USB_HEADSET -> "usb"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "bt"
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired"
+            AudioDeviceInfo.TYPE_BUILTIN_MIC -> "builtin"
+            AudioDeviceInfo.TYPE_LINE_ANALOG,
+            AudioDeviceInfo.TYPE_LINE_DIGITAL -> "line"
+            else -> ""
+        }
+    }
+
+    private fun getOutputDeviceName(deviceId: Int): String {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return "Default Output"
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val outputs = audioManager.getDevices(AudioManager.GET_DEVICES_OUTPUTS)
+        val device = outputs.firstOrNull { it.id == deviceId } ?: return "Default Output"
+        return getDeviceName(device)
+    }
+
     private fun getDeviceName(device: AudioDeviceInfo): String {
         return when (device.type) {
             AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Internal Microphone"
@@ -372,6 +445,7 @@ class JS8EngineService : Service() {
                 // Detect and broadcast the new device
                 val deviceName = getActiveAudioDevice()
                 broadcastAudioDevice(deviceName)
+                updateOutputDeviceForInput(deviceId)
                 return
             }
 
@@ -383,6 +457,7 @@ class JS8EngineService : Service() {
 
                     val deviceName = getActiveAudioDevice()
                     broadcastAudioDevice(deviceName)
+                    updateOutputDeviceForInput(deviceId)
                 } else {
                     Log.e(TAG, "Failed to start audio capture")
                     broadcastError("Failed to switch audio device")
@@ -393,6 +468,64 @@ class JS8EngineService : Service() {
             Log.e(TAG, "Error switching audio device", e)
             broadcastError("Error switching audio device: ${e.message}")
         }
+    }
+
+    private fun handleTransmitMessage(intent: Intent) {
+        val activeEngine = engine
+        if (activeEngine == null) {
+            broadcastError("Engine not running")
+            return
+        }
+
+        val text = intent.getStringExtra(EXTRA_TX_TEXT)?.trim().orEmpty()
+        if (text.isEmpty()) {
+            broadcastError("Empty TX message")
+            return
+        }
+
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val callsign = prefs.getString("callsign", "")?.trim().orEmpty().uppercase()
+        val grid = prefs.getString("grid", "")?.trim().orEmpty().uppercase()
+
+        val directed = intent.getStringExtra(EXTRA_TX_DIRECTED)?.trim().orEmpty()
+        val submode = intent.getIntExtra(EXTRA_TX_SUBMODE, 0)
+        val audioFrequencyHz = intent.getDoubleExtra(EXTRA_TX_FREQ_HZ, DEFAULT_AUDIO_FREQUENCY_HZ)
+        val txDelaySec = intent.getDoubleExtra(EXTRA_TX_DELAY_S, 0.0)
+        val forceIdentify = intent.getBooleanExtra(EXTRA_TX_FORCE_IDENTIFY, false)
+        val forceData = intent.getBooleanExtra(EXTRA_TX_FORCE_DATA, false)
+        val effectiveForceIdentify = forceIdentify || callsign.isNotBlank()
+
+        Log.i(
+            TAG,
+            "TX request: text_len=${text.length}, directed='${directed}', submode=$submode, freq=$audioFrequencyHz, delay=$txDelaySec, identify=$effectiveForceIdentify"
+        )
+
+        val ok = activeEngine.transmitMessage(
+            text = text,
+            myCall = callsign,
+            myGrid = grid,
+            selectedCall = directed,
+            submode = submode,
+            audioFrequencyHz = audioFrequencyHz,
+            txDelaySec = txDelaySec,
+            forceIdentify = effectiveForceIdentify,
+            forceData = forceData
+        )
+
+        if (ok) {
+            Log.i(TAG, "TX request accepted")
+            broadcastTxState(TX_STATE_STARTED)
+        } else {
+            Log.e(TAG, "TX request rejected")
+            broadcastError("Failed to start transmit")
+        }
+    }
+
+    private fun broadcastTxState(state: String) {
+        val intent = Intent(ACTION_TX_STATE).apply {
+            putExtra(EXTRA_TX_STATE, state)
+        }
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
     }
 
     companion object {
@@ -409,6 +542,8 @@ class JS8EngineService : Service() {
         const val ACTION_DECODE_FINISHED = "com.js8call.example.ACTION_DECODE_FINISHED"
         const val ACTION_AUDIO_DEVICE = "com.js8call.example.ACTION_AUDIO_DEVICE"
         const val ACTION_ERROR = "com.js8call.example.ACTION_ERROR"
+        const val ACTION_TRANSMIT_MESSAGE = "com.js8call.example.ACTION_TRANSMIT_MESSAGE"
+        const val ACTION_TX_STATE = "com.js8call.example.ACTION_TX_STATE"
 
         // Engine states
         const val STATE_STOPPED = "stopped"
@@ -435,6 +570,19 @@ class JS8EngineService : Service() {
         const val EXTRA_AUDIO_DEVICE = "audio_device"
         const val EXTRA_AUDIO_DEVICE_ID = "audio_device_id"
         const val EXTRA_ERROR_MESSAGE = "error_message"
+        const val EXTRA_TX_TEXT = "tx_text"
+        const val EXTRA_TX_DIRECTED = "tx_directed"
+        const val EXTRA_TX_SUBMODE = "tx_submode"
+        const val EXTRA_TX_FREQ_HZ = "tx_freq_hz"
+        const val EXTRA_TX_DELAY_S = "tx_delay_s"
+        const val EXTRA_TX_FORCE_IDENTIFY = "tx_force_identify"
+        const val EXTRA_TX_FORCE_DATA = "tx_force_data"
+        const val EXTRA_TX_STATE = "tx_state"
+
+        const val TX_STATE_STARTED = "started"
+        const val TX_STATE_FAILED = "failed"
+
+        const val DEFAULT_AUDIO_FREQUENCY_HZ = 1500.0
 
         private const val CHANNEL_ID = "js8call_service"
         private const val NOTIFICATION_ID = 1

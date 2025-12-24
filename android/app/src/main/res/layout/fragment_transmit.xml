@@ -53,6 +53,26 @@
 
     </com.google.android.material.textfield.TextInputLayout>
 
+    <!-- Speed selection -->
+    <com.google.android.material.textfield.TextInputLayout
+        android:id="@+id/tx_speed_layout"
+        style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
+        android:layout_width="0dp"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:hint="@string/tx_speed"
+        app:layout_constraintEnd_toEndOf="parent"
+        app:layout_constraintStart_toStartOf="parent"
+        app:layout_constraintTop_toBottomOf="@id/directed_input_layout">
+
+        <com.google.android.material.textfield.MaterialAutoCompleteTextView
+            android:id="@+id/tx_speed_select"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:inputType="none" />
+
+    </com.google.android.material.textfield.TextInputLayout>
+
     <!-- Action buttons -->
     <LinearLayout
         android:id="@+id/action_buttons"
@@ -62,7 +82,7 @@
         android:orientation="horizontal"
         app:layout_constraintEnd_toEndOf="parent"
         app:layout_constraintStart_toStartOf="parent"
-        app:layout_constraintTop_toBottomOf="@id/directed_input_layout">
+        app:layout_constraintTop_toBottomOf="@id/tx_speed_layout">
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/cq_button"
