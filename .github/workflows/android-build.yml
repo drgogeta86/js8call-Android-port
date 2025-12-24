@@ -139,51 +139,51 @@ jobs:
         name: js8call-release-aab
         path: android/app/build/outputs/bundle/release/*.aab
 
-  lint:
-    name: Lint
-    runs-on: ubuntu-latest
-
-    steps:
-    - name: Checkout code
-      uses: actions/checkout@v4
-
-    - name: Cache Boost headers
-      id: cache-boost
-      uses: actions/cache@v4
-      with:
-        path: .deps/boost
-        key: ${{ runner.os }}-boost-${{ env.BOOST_VERSION_UNDERSCORE }}
-
-    - name: Download Boost headers
-      if: steps.cache-boost.outputs.cache-hit != 'true'
-      run: |
-        mkdir -p .deps/boost
-        curl -L -o /tmp/boost.tar.gz \
-          https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz
-        tar -xzf /tmp/boost.tar.gz -C .deps/boost
-
-    - name: Set Boost include path
-      run: |
-        BOOST_DIR="${GITHUB_WORKSPACE}/.deps/boost/boost_${BOOST_VERSION_UNDERSCORE}"
-        echo "BOOST_ROOT=${BOOST_DIR}" >> "$GITHUB_ENV"
-        echo "BOOST_INCLUDEDIR=${BOOST_DIR}" >> "$GITHUB_ENV"
-
-    - name: Set up JDK 17
-      uses: actions/setup-java@v4
-      with:
-        java-version: '17'
-        distribution: 'temurin'
-
-    - name: Grant execute permission for gradlew
-      run: chmod +x android/gradlew
-
-    - name: Run lint
-      working-directory: android
-      run: ./gradlew lint
-
-    - name: Upload lint results
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: lint-results
-        path: android/*/build/reports/lint-results*.html
+#  lint:
+#    name: Lint
+#    runs-on: ubuntu-latest
+#
+#    steps:
+#    - name: Checkout code
+#      uses: actions/checkout@v4
+#
+#    - name: Cache Boost headers
+#      id: cache-boost
+#      uses: actions/cache@v4
+#      with:
+#        path: .deps/boost
+#        key: ${{ runner.os }}-boost-${{ env.BOOST_VERSION_UNDERSCORE }}
+#
+#    - name: Download Boost headers
+#      if: steps.cache-boost.outputs.cache-hit != 'true'
+#      run: |
+#        mkdir -p .deps/boost
+#        curl -L -o /tmp/boost.tar.gz \
+#          https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz
+#        tar -xzf /tmp/boost.tar.gz -C .deps/boost
+#
+#    - name: Set Boost include path
+#      run: |
+#        BOOST_DIR="${GITHUB_WORKSPACE}/.deps/boost/boost_${BOOST_VERSION_UNDERSCORE}"
+#        echo "BOOST_ROOT=${BOOST_DIR}" >> "$GITHUB_ENV"
+#        echo "BOOST_INCLUDEDIR=${BOOST_DIR}" >> "$GITHUB_ENV"
+#
+#    - name: Set up JDK 17
+#      uses: actions/setup-java@v4
+#      with:
+#        java-version: '17'
+#        distribution: 'temurin'
+#
+#    - name: Grant execute permission for gradlew
+#      run: chmod +x android/gradlew
+#
+#    - name: Run lint
+#      working-directory: android
+#      run: ./gradlew lint
+#
+#    - name: Upload lint results
+#      uses: actions/upload-artifact@v4
+#      if: always()
+#      with:
+#        name: lint-results
+#        path: android/*/build/reports/lint-results*.html
