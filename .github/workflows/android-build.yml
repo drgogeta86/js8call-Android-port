@@ -70,7 +70,7 @@ jobs:
       run: |
         mkdir -p .deps/boost
         curl -L -o /tmp/boost.tar.gz \
-          https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz
+          https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz
         tar -xzf /tmp/boost.tar.gz -C .deps/boost
 
     - name: Set Boost include path
@@ -157,7 +157,7 @@ jobs:
       run: |
         mkdir -p .deps/boost
         curl -L -o /tmp/boost.tar.gz \
-          https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz
+          https://archives.boost.io/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz
         tar -xzf /tmp/boost.tar.gz -C .deps/boost
 
     - name: Set Boost include path
