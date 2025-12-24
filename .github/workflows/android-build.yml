@@ -26,6 +26,10 @@ on:
           - release
           - both
 
+env:
+  BOOST_VERSION: 1.83.0
+  BOOST_VERSION_UNDERSCORE: 1_83_0
+
 jobs:
   build:
     name: Build Android
@@ -53,6 +57,25 @@ jobs:
     - name: Install NDK
       run: |
         sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
+
+    - name: Cache Boost headers
+      id: cache-boost
+      uses: actions/cache@v4
+      with:
+        path: .deps/boost
+        key: ${{ runner.os }}-boost-${{ env.BOOST_VERSION_UNDERSCORE }}
+
+    - name: Download Boost headers
+      if: steps.cache-boost.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p .deps/boost
+        curl -L -o /tmp/boost.tar.gz \
+          https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz
+        tar -xzf /tmp/boost.tar.gz -C .deps/boost
+
+    - name: Set Boost include path
+      run: |
+        echo "BOOST_INCLUDEDIR=${GITHUB_WORKSPACE}/.deps/boost/boost_${BOOST_VERSION_UNDERSCORE}" >> "$GITHUB_ENV"
 
     - name: Cache Gradle dependencies
       uses: actions/cache@v4
@@ -121,6 +144,25 @@ jobs:
     steps:
     - name: Checkout code
       uses: actions/checkout@v4
+
+    - name: Cache Boost headers
+      id: cache-boost
+      uses: actions/cache@v4
+      with:
+        path: .deps/boost
+        key: ${{ runner.os }}-boost-${{ env.BOOST_VERSION_UNDERSCORE }}
+
+    - name: Download Boost headers
+      if: steps.cache-boost.outputs.cache-hit != 'true'
+      run: |
+        mkdir -p .deps/boost
+        curl -L -o /tmp/boost.tar.gz \
+          https://boostorg.jfrog.io/artifactory/main/release/${BOOST_VERSION}/source/boost_${BOOST_VERSION_UNDERSCORE}.tar.gz
+        tar -xzf /tmp/boost.tar.gz -C .deps/boost
+
+    - name: Set Boost include path
+      run: |
+        echo "BOOST_INCLUDEDIR=${GITHUB_WORKSPACE}/.deps/boost/boost_${BOOST_VERSION_UNDERSCORE}" >> "$GITHUB_ENV"
 
     - name: Set up JDK 17
       uses: actions/setup-java@v4
