@@ -1,12 +1,14 @@
 package com.js8call.core
 
 import android.content.Context
+import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioManager
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import android.os.Handler
 import android.os.HandlerThread
+import android.Manifest
 import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
@@ -71,6 +73,14 @@ class JS8AudioHelper(
      */
     fun startCapture(): Boolean {
         if (isRecording) return false
+
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M) {
+            val safeContext = context ?: return false
+            if (safeContext.checkSelfPermission(Manifest.permission.RECORD_AUDIO) != PackageManager.PERMISSION_GRANTED) {
+                android.util.Log.w("JS8AudioHelper", "RECORD_AUDIO permission not granted")
+                return false
+            }
+        }
 
         val minBufferSize = AudioRecord.getMinBufferSize(
             captureSampleRate,
