@@ -15,6 +15,16 @@ on:
       - 'core/**'
       - 'adapters/android/**'
   workflow_dispatch:
+    inputs:
+      build_type:
+        description: Build type
+        required: false
+        default: debug
+        type: choice
+        options:
+          - debug
+          - release
+          - both
 
 jobs:
   build:
@@ -23,7 +33,7 @@ jobs:
 
     strategy:
       matrix:
-        build-type: [debug, release]
+        build-type: ${{ fromJSON(github.event_name == 'workflow_dispatch' && (github.event.inputs.build_type == 'both' && '["debug","release"]' || format('["{0}"]', github.event.inputs.build_type)) || '["debug"]') }}
 
     steps:
     - name: Checkout code
@@ -45,7 +55,7 @@ jobs:
         sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
 
     - name: Cache Gradle dependencies
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: |
           ~/.gradle/caches
@@ -56,7 +66,7 @@ jobs:
 
     - name: Cache FFTW3 build
       id: cache-fftw3
-      uses: actions/cache@v3
+      uses: actions/cache@v4
       with:
         path: android/libs/fftw3
         key: ${{ runner.os }}-fftw3-3.3.10-ndk26
@@ -85,21 +95,21 @@ jobs:
       run: ./gradlew test
 
     - name: Upload APK
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: js8call-${{ matrix.build-type }}-apk
         path: android/app/build/outputs/apk/${{ matrix.build-type }}/*.apk
 
     - name: Upload AAR
       if: matrix.build-type == 'release'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: js8call-core-aar
         path: android/js8core-lib/build/outputs/aar/*.aar
 
     - name: Upload AAB (Release only)
       if: matrix.build-type == 'release'
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       with:
         name: js8call-release-aab
         path: android/app/build/outputs/bundle/release/*.aab
@@ -126,7 +136,7 @@ jobs:
       run: ./gradlew lint
 
     - name: Upload lint results
-      uses: actions/upload-artifact@v3
+      uses: actions/upload-artifact@v4
       if: always()
       with:
         name: lint-results
