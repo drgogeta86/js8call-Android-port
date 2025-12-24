@@ -22,6 +22,7 @@ public:
 
   void stop();
   bool is_idle() const { return state_.load() == State::Idle; }
+  bool is_active() const { return state_.load() == State::Active; }
 
   float next_sample();
 

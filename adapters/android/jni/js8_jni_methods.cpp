@@ -248,6 +248,15 @@ Java_com_js8call_core_JS8Engine_nativeIsTransmitting(
 }
 
 JNIEXPORT jboolean JNICALL
+Java_com_js8call_core_JS8Engine_nativeIsTransmittingAudio(
+    JNIEnv* /* env */,
+    jobject /* thiz */,
+    jlong handle) {
+  JS8Engine_Native* engine = reinterpret_cast<JS8Engine_Native*>(handle);
+  return js8_engine_is_transmitting_audio(engine) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jboolean JNICALL
 Java_com_js8call_core_JS8Engine_nativeIsRunning(
     JNIEnv* /* env */,
     jobject /* thiz */,

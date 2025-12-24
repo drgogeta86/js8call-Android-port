@@ -335,6 +335,10 @@ public:
     return tx_active_;
   }
 
+  bool is_transmitting_audio() const override {
+    return tx_modulator_.is_active();
+  }
+
 private:
     struct SubmodeSchedule {
       protocol::SubmodeId id;

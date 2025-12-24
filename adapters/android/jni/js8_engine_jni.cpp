@@ -37,6 +37,7 @@ JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeTransmitFrame(J
 JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeStartTune(JNIEnv*, jobject, jlong, jdouble, jint, jdouble);
 JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeStopTransmit(JNIEnv*, jobject, jlong);
 JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeIsTransmitting(JNIEnv*, jobject, jlong);
+JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeIsTransmittingAudio(JNIEnv*, jobject, jlong);
 }
 
 // Global JavaVM reference for callbacks
@@ -591,6 +592,11 @@ int js8_engine_is_transmitting(JS8Engine_Native* engine) {
   return engine->engine->is_transmitting() ? 1 : 0;
 }
 
+int js8_engine_is_transmitting_audio(JS8Engine_Native* engine) {
+  if (!engine || !engine->engine) return 0;
+  return engine->engine->is_transmitting_audio() ? 1 : 0;
+}
+
 int js8_engine_is_running(JS8Engine_Native* engine) {
   if (!engine || !engine->engine) return 0;
   // TODO: Add is_running() method to engine interface
@@ -628,6 +634,8 @@ int js8_register_natives(JavaVM* vm, JNIEnv* env) {
      (void*)Java_com_js8call_core_JS8Engine_nativeStopTransmit},
     {"nativeIsTransmitting", "(J)Z",
      (void*)Java_com_js8call_core_JS8Engine_nativeIsTransmitting},
+    {"nativeIsTransmittingAudio", "(J)Z",
+     (void*)Java_com_js8call_core_JS8Engine_nativeIsTransmittingAudio},
     {"nativeIsRunning", "(J)Z", (void*)Java_com_js8call_core_JS8Engine_nativeIsRunning}
   };
 

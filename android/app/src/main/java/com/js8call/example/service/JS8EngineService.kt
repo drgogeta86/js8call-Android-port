@@ -32,8 +32,36 @@ class JS8EngineService : Service() {
     private var engine: JS8Engine? = null
     private var audioHelper: JS8AudioHelper? = null
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val txMonitorHandler = Handler(Looper.getMainLooper())
     private var selectedAudioDeviceId: Int = -1  // -1 means use default
     private var selectedOutputDeviceId: Int = -1  // -1 means use default
+    private var txMonitorActive = false
+    private var txMonitorWasAudioActive = false
+    private val txMonitorRunnable = object : Runnable {
+        override fun run() {
+            val activeEngine = engine
+            if (activeEngine == null) {
+                txMonitorActive = false
+                return
+            }
+            val sessionActive = activeEngine.isTransmitting()
+            val audioActive = activeEngine.isTransmittingAudio()
+            if (!sessionActive) {
+                txMonitorActive = false
+                txMonitorWasAudioActive = false
+                broadcastTxState(TX_STATE_FINISHED)
+                return
+            }
+            if (audioActive && !txMonitorWasAudioActive) {
+                txMonitorWasAudioActive = true
+                broadcastTxState(TX_STATE_STARTED)
+            } else if (!audioActive && txMonitorWasAudioActive) {
+                txMonitorWasAudioActive = false
+                broadcastTxState(TX_STATE_QUEUED)
+            }
+            txMonitorHandler.postDelayed(this, TX_MONITOR_INTERVAL_MS)
+        }
+    }
 
     override fun onCreate() {
         super.onCreate()
@@ -239,6 +267,7 @@ class JS8EngineService : Service() {
             audioHelper?.stopCapture()
             audioHelper?.close()
             audioHelper = null
+            stopTxMonitor()
 
             engine?.stop()
             engine?.close()
@@ -515,10 +544,12 @@ class JS8EngineService : Service() {
 
         if (ok) {
             Log.i(TAG, "TX request accepted")
-            broadcastTxState(TX_STATE_STARTED)
+            broadcastTxState(TX_STATE_QUEUED)
+            startTxMonitor()
         } else {
             Log.e(TAG, "TX request rejected")
             broadcastError("Failed to start transmit")
+            broadcastTxState(TX_STATE_FAILED)
         }
     }
 
@@ -527,6 +558,19 @@ class JS8EngineService : Service() {
             putExtra(EXTRA_TX_STATE, state)
         }
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+
+    private fun startTxMonitor() {
+        txMonitorHandler.removeCallbacks(txMonitorRunnable)
+        txMonitorActive = true
+        txMonitorWasAudioActive = false
+        txMonitorHandler.postDelayed(txMonitorRunnable, TX_MONITOR_INTERVAL_MS)
+    }
+
+    private fun stopTxMonitor() {
+        if (!txMonitorActive) return
+        txMonitorActive = false
+        txMonitorHandler.removeCallbacks(txMonitorRunnable)
     }
 
     private fun applyGridIfHeartbeat(text: String, grid: String): String {
@@ -592,10 +636,13 @@ class JS8EngineService : Service() {
         const val EXTRA_TX_FORCE_DATA = "tx_force_data"
         const val EXTRA_TX_STATE = "tx_state"
 
+        const val TX_STATE_QUEUED = "queued"
         const val TX_STATE_STARTED = "started"
+        const val TX_STATE_FINISHED = "finished"
         const val TX_STATE_FAILED = "failed"
 
         const val DEFAULT_AUDIO_FREQUENCY_HZ = 1500.0
+        private const val TX_MONITOR_INTERVAL_MS = 250L
 
         private const val CHANNEL_ID = "js8call_service"
         private const val NOTIFICATION_ID = 1

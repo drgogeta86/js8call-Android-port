@@ -8,12 +8,18 @@ import android.view.View
 import android.view.ViewGroup
 import android.widget.Button
 import android.widget.TextView
+import android.content.BroadcastReceiver
+import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
+import android.content.res.ColorStateList
 import android.widget.ArrayAdapter
 import android.widget.AutoCompleteTextView
 import android.widget.Filter
+import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
+import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.textfield.TextInputEditText
@@ -38,6 +44,18 @@ class TransmitFragment : Fragment() {
     private lateinit var speedSelect: AutoCompleteTextView
     private var selectedMode: TxMode = TxMode.FREE_TEXT
     private var selectedSubmode: Int = SUBMODE_NORMAL
+    private var defaultSendButtonTint: ColorStateList? = null
+
+    private val broadcastReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                JS8EngineService.ACTION_TX_STATE -> {
+                    val state = intent.getStringExtra(JS8EngineService.EXTRA_TX_STATE)
+                    handleTxState(state)
+                }
+            }
+        }
+    }
 
     override fun onCreateView(
         inflater: LayoutInflater,
@@ -62,6 +80,7 @@ class TransmitFragment : Fragment() {
         txStatusText = view.findViewById(R.id.tx_status_text)
         modeSelect = view.findViewById(R.id.tx_mode_select)
         speedSelect = view.findViewById(R.id.tx_speed_select)
+        defaultSendButtonTint = sendButton.backgroundTintList
 
         // Set up listeners
         setupListeners()
@@ -70,6 +89,14 @@ class TransmitFragment : Fragment() {
 
         // Observe ViewModel
         observeViewModel()
+
+        // Register broadcast receiver
+        registerBroadcastReceiver()
+    }
+
+    override fun onDestroyView() {
+        super.onDestroyView()
+        unregisterBroadcastReceiver()
     }
 
     private fun setupListeners() {
@@ -149,6 +176,28 @@ class TransmitFragment : Fragment() {
         }
     }
 
+    private fun registerBroadcastReceiver() {
+        val filter = IntentFilter().apply {
+            addAction(JS8EngineService.ACTION_TX_STATE)
+        }
+        LocalBroadcastManager.getInstance(requireContext())
+            .registerReceiver(broadcastReceiver, filter)
+    }
+
+    private fun unregisterBroadcastReceiver() {
+        LocalBroadcastManager.getInstance(requireContext())
+            .unregisterReceiver(broadcastReceiver)
+    }
+
+    private fun handleTxState(state: String?) {
+        when (state) {
+            JS8EngineService.TX_STATE_QUEUED -> viewModel.setQueued()
+            JS8EngineService.TX_STATE_STARTED -> viewModel.startTransmitting()
+            JS8EngineService.TX_STATE_FINISHED -> viewModel.transmissionComplete()
+            JS8EngineService.TX_STATE_FAILED -> viewModel.transmissionFailed()
+        }
+    }
+
     private fun observeViewModel() {
         // Observe composed message
         viewModel.composedMessage.observe(viewLifecycleOwner) { text ->
@@ -164,6 +213,7 @@ class TransmitFragment : Fragment() {
                 TransmitState.QUEUED -> getString(R.string.tx_status_queued)
                 TransmitState.TRANSMITTING -> getString(R.string.tx_status_transmitting)
             }
+            updateSendButtonTint(state)
         }
 
         // Observe queue
@@ -182,6 +232,20 @@ class TransmitFragment : Fragment() {
     private fun updateSendButtonState() {
         val hasText = messageEditText.text?.isNotBlank() == true
         sendButton.isEnabled = selectedMode != TxMode.FREE_TEXT || hasText
+    }
+
+    private fun updateSendButtonTint(state: TransmitState) {
+        when (state) {
+            TransmitState.IDLE -> sendButton.backgroundTintList = defaultSendButtonTint
+            TransmitState.QUEUED -> {
+                val color = ContextCompat.getColor(requireContext(), R.color.tx_button_queued)
+                sendButton.backgroundTintList = ColorStateList.valueOf(color)
+            }
+            TransmitState.TRANSMITTING -> {
+                val color = ContextCompat.getColor(requireContext(), R.color.tx_button_transmitting)
+                sendButton.backgroundTintList = ColorStateList.valueOf(color)
+            }
+        }
     }
 
     private fun sendMessage() {

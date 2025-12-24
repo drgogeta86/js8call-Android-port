@@ -124,6 +124,7 @@ public:
   virtual bool start_tune(double audio_frequency_hz, int submode, double tx_delay_s) = 0;
   virtual void stop_transmit() = 0;
   virtual bool is_transmitting() const = 0;
+  virtual bool is_transmitting_audio() const = 0;
 };
 
 std::unique_ptr<Js8Engine> make_engine(EngineConfig const& config,

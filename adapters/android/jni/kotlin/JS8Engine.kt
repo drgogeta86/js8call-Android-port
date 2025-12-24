@@ -204,6 +204,13 @@ class JS8Engine private constructor(
     }
 
     /**
+     * Check if the TX modulator is actively producing audio.
+     */
+    fun isTransmittingAudio(): Boolean {
+        return nativeHandle != 0L && nativeIsTransmittingAudio(nativeHandle)
+    }
+
+    /**
      * Close and destroy the engine. After calling this, the engine cannot be used.
      */
     override fun close() {
@@ -268,6 +275,7 @@ class JS8Engine private constructor(
     ): Boolean
     private external fun nativeStopTransmit(handle: Long)
     private external fun nativeIsTransmitting(handle: Long): Boolean
+    private external fun nativeIsTransmittingAudio(handle: Long): Boolean
 
     /**
      * Callback interface for engine events.

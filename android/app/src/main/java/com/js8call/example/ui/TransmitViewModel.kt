@@ -105,6 +105,10 @@ class TransmitViewModel(application: Application) : AndroidViewModel(application
         _txState.value = TransmitState.TRANSMITTING
     }
 
+    fun setQueued() {
+        _txState.value = TransmitState.QUEUED
+    }
+
     /**
      * Transmission complete (called when engine finishes TX).
      */
@@ -115,6 +119,14 @@ class TransmitViewModel(application: Application) : AndroidViewModel(application
             _queue.value = txQueue.toList()
         }
 
+        _txState.value = if (txQueue.isEmpty()) {
+            TransmitState.IDLE
+        } else {
+            TransmitState.QUEUED
+        }
+    }
+
+    fun transmissionFailed() {
         _txState.value = if (txQueue.isEmpty()) {
             TransmitState.IDLE
         } else {

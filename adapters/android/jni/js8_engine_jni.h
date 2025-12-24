@@ -49,6 +49,7 @@ int js8_engine_start_tune(JS8Engine_Native* engine,
                           double tx_delay_s);
 void js8_engine_stop_transmit(JS8Engine_Native* engine);
 int js8_engine_is_transmitting(JS8Engine_Native* engine);
+int js8_engine_is_transmitting_audio(JS8Engine_Native* engine);
 
 // Status queries
 int js8_engine_is_running(JS8Engine_Native* engine);

@@ -77,4 +77,6 @@
     <color name="snr_fair">#FFD600</color>       <!-- Yellow -->
     <color name="snr_poor">#FF6D00</color>       <!-- Orange -->
     <color name="snr_weak">#DD2C00</color>       <!-- Red -->
+    <color name="tx_button_queued">#F9A825</color>
+    <color name="tx_button_transmitting">#D32F2F</color>
 </resources>
