@@ -1,1 +1,15 @@
+# macOS
 .DS_Store
+
+# Android/Gradle local config and build outputs
+android/local.properties
+**/.gradle/
+**/.cxx/
+android/**/build/
+android/fftw3-build/
+
+# CMake build artifacts
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile

@@ -76,8 +76,30 @@ endif()
 
 # Boost (header-only parts)
 if(ANDROID)
-  # For Android, use system Boost headers (header-only, no linking needed)
-  set(Boost_INCLUDE_DIRS "/opt/homebrew/include")
+  # Header-only use: allow BOOST_INCLUDEDIR or BOOST_ROOT to locate headers.
+  if(NOT Boost_INCLUDE_DIRS)
+    find_path(Boost_INCLUDE_DIRS
+      NAMES boost/version.hpp
+      HINTS
+        ENV BOOST_INCLUDEDIR
+        ${BOOST_INCLUDEDIR}
+    )
+  endif()
+
+  if(NOT Boost_INCLUDE_DIRS)
+    find_path(Boost_INCLUDE_DIRS
+      NAMES boost/version.hpp
+      HINTS
+        ENV BOOST_ROOT
+        ${BOOST_ROOT}
+      PATH_SUFFIXES include
+    )
+  endif()
+
+  if(NOT Boost_INCLUDE_DIRS)
+    message(FATAL_ERROR "Boost headers not found. Set BOOST_ROOT or BOOST_INCLUDEDIR.")
+  endif()
+
   message(STATUS "Using Boost headers for Android from: ${Boost_INCLUDE_DIRS}")
 else()
   set(Boost_USE_STATIC_LIBS ON)
