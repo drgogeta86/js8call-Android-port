@@ -77,12 +77,19 @@ endif()
 # Boost (header-only parts)
 if(ANDROID)
   # Header-only use: allow BOOST_INCLUDEDIR or BOOST_ROOT to locate headers.
+  set(_BOOST_LOCAL_INCLUDE "${CMAKE_CURRENT_SOURCE_DIR}/libs/boost")
+  if(NOT Boost_INCLUDE_DIRS AND EXISTS "${_BOOST_LOCAL_INCLUDE}/boost/version.hpp")
+    set(Boost_INCLUDE_DIRS "${_BOOST_LOCAL_INCLUDE}")
+  endif()
+
   if(NOT Boost_INCLUDE_DIRS)
     find_path(Boost_INCLUDE_DIRS
       NAMES boost/version.hpp
       HINTS
+        ${CMAKE_CURRENT_SOURCE_DIR}/libs/boost
         ENV BOOST_INCLUDEDIR
         ${BOOST_INCLUDEDIR}
+      NO_CMAKE_FIND_ROOT_PATH
     )
   endif()
 
@@ -90,9 +97,11 @@ if(ANDROID)
     find_path(Boost_INCLUDE_DIRS
       NAMES boost/version.hpp
       HINTS
+        ${CMAKE_CURRENT_SOURCE_DIR}/libs/boost
         ENV BOOST_ROOT
         ${BOOST_ROOT}
       PATH_SUFFIXES include
+      NO_CMAKE_FIND_ROOT_PATH
     )
   endif()
 
@@ -101,6 +110,7 @@ if(ANDROID)
   endif()
 
   message(STATUS "Using Boost headers for Android from: ${Boost_INCLUDE_DIRS}")
+  unset(_BOOST_LOCAL_INCLUDE)
 else()
   set(Boost_USE_STATIC_LIBS ON)
   find_package(Boost 1.77 REQUIRED)
