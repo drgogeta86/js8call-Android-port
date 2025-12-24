@@ -41,12 +41,16 @@ class MonitorFragment : Fragment() {
     private lateinit var snrValue: TextView
     private lateinit var powerValue: TextView
     private lateinit var audioDeviceSpinner: Spinner
+    private lateinit var frequencySpinner: Spinner
     private lateinit var startStopButton: Button
 
     // Audio device management
     private var audioDeviceAdapter: ArrayAdapter<AudioDeviceItem>? = null
     private var availableDevices = mutableListOf<AudioDeviceItem>()
     private var isUpdatingSpinner = false
+
+    // Frequency management
+    private var isUpdatingFrequencySpinner = false
 
     private val broadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -115,10 +119,14 @@ class MonitorFragment : Fragment() {
         snrValue = view.findViewById(R.id.snr_value)
         powerValue = view.findViewById(R.id.power_value)
         audioDeviceSpinner = view.findViewById(R.id.audio_device_spinner)
+        frequencySpinner = view.findViewById(R.id.frequency_spinner)
         startStopButton = view.findViewById(R.id.start_stop_button)
 
         // Set up audio device spinner
         setupAudioDeviceSpinner()
+
+        // Set up frequency spinner
+        setupFrequencySpinner()
 
         // Set up observers
         observeViewModel()
@@ -405,6 +413,66 @@ class MonitorFragment : Fragment() {
         requireContext().startService(intent)
 
         Snackbar.make(requireView(), "Switching audio device...", Snackbar.LENGTH_SHORT).show()
+    }
+
+    private fun setupFrequencySpinner() {
+        // Get frequency arrays from resources
+        val frequencyEntries = resources.getStringArray(R.array.js8_frequency_entries)
+        val frequencyValues = resources.getStringArray(R.array.js8_frequency_values)
+
+        // Create adapter
+        val adapter = ArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_spinner_item,
+            frequencyEntries
+        )
+        adapter.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
+        frequencySpinner.adapter = adapter
+
+        // Load saved frequency preference
+        val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(requireContext())
+        val savedFrequency = prefs.getString("last_frequency", frequencyValues[3]) // Default to 20m (14.078 MHz)
+        val savedIndex = frequencyValues.indexOf(savedFrequency).takeIf { it >= 0 } ?: 3
+
+        // Set initial selection
+        isUpdatingFrequencySpinner = true
+        frequencySpinner.setSelection(savedIndex)
+        isUpdatingFrequencySpinner = false
+
+        // Set up selection listener
+        frequencySpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
+            override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                if (isUpdatingFrequencySpinner) return
+                if (position < 0 || position >= frequencyValues.size) return
+
+                val frequencyHz = frequencyValues[position].toLongOrNull() ?: return
+                android.util.Log.d("MonitorFragment", "Frequency selected: ${frequencyEntries[position]} ($frequencyHz Hz)")
+
+                // Save frequency preference
+                prefs.edit().putString("last_frequency", frequencyValues[position]).apply()
+
+                // Check if rig control is enabled
+                val rigControlEnabled = prefs.getBoolean("rig_control_enabled", false)
+                val rigType = prefs.getString("rig_type", "none")
+
+                if (rigControlEnabled && rigType == "network") {
+                    // Send frequency change to service
+                    val intent = Intent(requireContext(), JS8EngineService::class.java).apply {
+                        action = JS8EngineService.ACTION_SET_FREQUENCY
+                        putExtra(JS8EngineService.EXTRA_FREQUENCY_HZ, frequencyHz)
+                    }
+                    requireContext().startService(intent)
+
+                    Snackbar.make(requireView(), "Setting frequency to ${frequencyEntries[position]}", Snackbar.LENGTH_SHORT).show()
+                } else {
+                    android.util.Log.d("MonitorFragment", "Rig control not enabled or not network type, skipping frequency change")
+                }
+            }
+
+            override fun onNothingSelected(parent: AdapterView<*>?) {
+                // Do nothing
+            }
+        }
     }
 
     /**

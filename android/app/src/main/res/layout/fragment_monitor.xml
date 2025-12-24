@@ -50,7 +50,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:columnCount="2"
-                android:rowCount="3">
+                android:rowCount="4">
 
                 <!-- SNR -->
                 <TextView
@@ -102,6 +102,25 @@
 
                 <Spinner
                     android:id="@+id/audio_device_spinner"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_columnWeight="1"
+                    android:layout_marginTop="4dp"
+                    android:minHeight="32dp"
+                    android:spinnerMode="dropdown" />
+
+                <!-- Radio Frequency -->
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_columnWeight="1"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/monitor_radio_frequency"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <Spinner
+                    android:id="@+id/frequency_spinner"
                     android:layout_width="0dp"
                     android:layout_height="wrap_content"
                     android:layout_columnWeight="1"

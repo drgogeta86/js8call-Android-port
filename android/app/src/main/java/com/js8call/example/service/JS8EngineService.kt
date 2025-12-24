@@ -31,6 +31,9 @@ class JS8EngineService : Service() {
 
     private var engine: JS8Engine? = null
     private var audioHelper: JS8AudioHelper? = null
+    private var rigCtlClient: RigCtlClient? = null
+    private var rigCtlConnected: Boolean = false
+    private var rigCtlErrorShown: Boolean = false
     private val mainHandler = Handler(Looper.getMainLooper())
     private val txMonitorHandler = Handler(Looper.getMainLooper())
     private var selectedAudioDeviceId: Int = -1  // -1 means use default
@@ -49,14 +52,41 @@ class JS8EngineService : Service() {
             if (!sessionActive) {
                 txMonitorActive = false
                 txMonitorWasAudioActive = false
+                // Release PTT when TX finishes
+                if (rigCtlConnected) {
+                    rigCtlClient?.let { rig ->
+                        Thread {
+                            val pttOff = rig.setPtt(false)
+                            Log.i(TAG, "TX finished, PTT released: $pttOff")
+                        }.start()
+                    }
+                }
                 broadcastTxState(TX_STATE_FINISHED)
                 return
             }
             if (audioActive && !txMonitorWasAudioActive) {
                 txMonitorWasAudioActive = true
+                // Enable PTT when audio TX starts
+                if (rigCtlConnected) {
+                    rigCtlClient?.let { rig ->
+                        Thread {
+                            val pttOn = rig.setPtt(true)
+                            Log.i(TAG, "TX audio started, PTT enabled: $pttOn")
+                        }.start()
+                    }
+                }
                 broadcastTxState(TX_STATE_STARTED)
             } else if (!audioActive && txMonitorWasAudioActive) {
                 txMonitorWasAudioActive = false
+                // Release PTT when audio stops (between packets)
+                if (rigCtlConnected) {
+                    rigCtlClient?.let { rig ->
+                        Thread {
+                            val pttOff = rig.setPtt(false)
+                            Log.i(TAG, "TX audio paused, PTT released: $pttOff")
+                        }.start()
+                    }
+                }
                 broadcastTxState(TX_STATE_QUEUED)
             }
             txMonitorHandler.postDelayed(this, TX_MONITOR_INTERVAL_MS)
@@ -90,6 +120,11 @@ class JS8EngineService : Service() {
                 val deviceId = intent.getIntExtra(EXTRA_AUDIO_DEVICE_ID, -1)
                 Log.i(TAG, "Switching audio device to ID: $deviceId")
                 switchAudioDevice(deviceId)
+            }
+            ACTION_SET_FREQUENCY -> {
+                val frequencyHz = intent.getLongExtra(EXTRA_FREQUENCY_HZ, 0L)
+                Log.i(TAG, "Setting frequency to $frequencyHz Hz")
+                setFrequency(frequencyHz)
             }
             ACTION_TRANSMIT_MESSAGE -> {
                 handleTransmitMessage(intent)
@@ -244,6 +279,9 @@ class JS8EngineService : Service() {
                     broadcastAudioDevice(deviceName)
 
                     broadcastEngineState(STATE_RUNNING)
+
+                    // Initialize rig control if enabled
+                    initializeRigControl()
                 } else {
                     Log.e(TAG, "Failed to start audio capture")
                     broadcastError("Failed to start audio capture")
@@ -262,12 +300,66 @@ class JS8EngineService : Service() {
         }
     }
 
+    private fun initializeRigControl() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val rigControlEnabled = prefs.getBoolean("rig_control_enabled", false)
+        val rigType = prefs.getString("rig_type", "none")
+
+        if (!rigControlEnabled || rigType != "network") {
+            Log.i(TAG, "Rig control not enabled or not network type")
+            return
+        }
+
+        val host = prefs.getString("rigctld_host", "localhost") ?: "localhost"
+        val portStr = prefs.getString("rigctld_port", "4532") ?: "4532"
+        val port = portStr.toIntOrNull() ?: 4532
+
+        Log.i(TAG, "Initializing rig control: $host:$port")
+
+        // Connect on background thread to avoid NetworkOnMainThreadException
+        Thread {
+            try {
+                rigCtlClient = RigCtlClient(host, port)
+                rigCtlConnected = rigCtlClient?.connect() == true
+                rigCtlErrorShown = false
+
+                mainHandler.post {
+                    if (rigCtlConnected) {
+                        Log.i(TAG, "Connected to rigctld at $host:$port")
+                    } else {
+                        Log.w(TAG, "Failed to connect to rigctld at $host:$port")
+                        broadcastError("Failed to connect to rigctld. Rig control unavailable.")
+                        rigCtlErrorShown = true
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error initializing rig control", e)
+                mainHandler.post {
+                    broadcastError("Error connecting to rigctld: ${e.message}")
+                    rigCtlErrorShown = true
+                }
+            }
+        }.start()
+    }
+
     private fun stopEngine() {
         try {
             audioHelper?.stopCapture()
             audioHelper?.close()
             audioHelper = null
             stopTxMonitor()
+
+            // Disconnect rig control on background thread
+            val clientToDisconnect = rigCtlClient
+            rigCtlClient = null
+            rigCtlConnected = false
+            rigCtlErrorShown = false
+
+            if (clientToDisconnect != null) {
+                Thread {
+                    clientToDisconnect.disconnect()
+                }.start()
+            }
 
             engine?.stop()
             engine?.close()
@@ -585,6 +677,32 @@ class JS8EngineService : Service() {
         return "$trimmed $grid4".trim()
     }
 
+    private fun setFrequency(frequencyHz: Long) {
+        if (!rigCtlConnected) {
+            Log.d(TAG, "Cannot set frequency: rig control not connected")
+            return
+        }
+
+        val rig = rigCtlClient ?: return
+
+        // Run on background thread
+        Thread {
+            val success = rig.setFrequency(frequencyHz)
+
+            mainHandler.post {
+                if (success) {
+                    Log.i(TAG, "Frequency set to $frequencyHz Hz")
+                } else {
+                    Log.w(TAG, "Failed to set frequency to $frequencyHz Hz")
+                    if (!rigCtlErrorShown) {
+                        broadcastError("Rig control communication failed")
+                        rigCtlErrorShown = true
+                    }
+                }
+            }
+        }.start()
+    }
+
     companion object {
         private const val TAG = "JS8EngineService"
 
@@ -592,6 +710,7 @@ class JS8EngineService : Service() {
         const val ACTION_START = "com.js8call.example.ACTION_START"
         const val ACTION_STOP = "com.js8call.example.ACTION_STOP"
         const val ACTION_SWITCH_AUDIO_DEVICE = "com.js8call.example.ACTION_SWITCH_AUDIO_DEVICE"
+        const val ACTION_SET_FREQUENCY = "com.js8call.example.ACTION_SET_FREQUENCY"
         const val ACTION_ENGINE_STATE = "com.js8call.example.ACTION_ENGINE_STATE"
         const val ACTION_DECODE = "com.js8call.example.ACTION_DECODE"
         const val ACTION_SPECTRUM = "com.js8call.example.ACTION_SPECTRUM"
@@ -627,6 +746,7 @@ class JS8EngineService : Service() {
         const val EXTRA_AUDIO_DEVICE = "audio_device"
         const val EXTRA_AUDIO_DEVICE_ID = "audio_device_id"
         const val EXTRA_ERROR_MESSAGE = "error_message"
+        const val EXTRA_FREQUENCY_HZ = "frequency_hz"
         const val EXTRA_TX_TEXT = "tx_text"
         const val EXTRA_TX_DIRECTED = "tx_directed"
         const val EXTRA_TX_SUBMODE = "tx_submode"

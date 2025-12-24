@@ -63,6 +63,24 @@
             app:useSimpleSummaryProvider="true"
             app:iconSpaceReserved="false" />
 
+        <EditTextPreference
+            app:key="rigctld_host"
+            app:title="@string/settings_rigctld_host"
+            app:summary="@string/settings_rigctld_host_summary"
+            app:defaultValue="localhost"
+            app:dependency="rig_control_enabled"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
+        <EditTextPreference
+            app:key="rigctld_port"
+            app:title="@string/settings_rigctld_port"
+            app:summary="@string/settings_rigctld_port_summary"
+            app:defaultValue="4532"
+            app:dependency="rig_control_enabled"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
     </PreferenceCategory>
 
     <!-- Network Category -->
