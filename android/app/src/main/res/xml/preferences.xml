@@ -81,6 +81,26 @@
             app:useSimpleSummaryProvider="true"
             app:iconSpaceReserved="false" />
 
+        <ListPreference
+            app:key="icom_radio_model"
+            app:title="@string/settings_icom_model"
+            app:summary="@string/settings_icom_model_summary"
+            app:entries="@array/icom_model_entries"
+            app:entryValues="@array/icom_model_addresses"
+            app:defaultValue="94"
+            app:dependency="rig_control_enabled"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
+        <EditTextPreference
+            app:key="icom_baud_rate"
+            app:title="@string/settings_icom_baud_rate"
+            app:summary="@string/settings_icom_baud_rate_summary"
+            app:defaultValue="19200"
+            app:dependency="rig_control_enabled"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
     </PreferenceCategory>
 
     <!-- Network Category -->

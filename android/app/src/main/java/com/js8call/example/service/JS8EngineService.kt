@@ -32,6 +32,7 @@ class JS8EngineService : Service() {
     private var engine: JS8Engine? = null
     private var audioHelper: JS8AudioHelper? = null
     private var rigCtlClient: RigCtlClient? = null
+    private var icomClient: IcomCIVClient? = null
     private var rigCtlConnected: Boolean = false
     private var rigCtlErrorShown: Boolean = false
     private val mainHandler = Handler(Looper.getMainLooper())
@@ -54,12 +55,14 @@ class JS8EngineService : Service() {
                 txMonitorWasAudioActive = false
                 // Release PTT when TX finishes
                 if (rigCtlConnected) {
-                    rigCtlClient?.let { rig ->
-                        Thread {
-                            val pttOff = rig.setPtt(false)
-                            Log.i(TAG, "TX finished, PTT released: $pttOff")
-                        }.start()
-                    }
+                    Thread {
+                        val pttOff = when {
+                            rigCtlClient != null -> rigCtlClient!!.setPtt(false)
+                            icomClient != null -> icomClient!!.setPtt(false)
+                            else -> false
+                        }
+                        Log.i(TAG, "TX finished, PTT released: $pttOff")
+                    }.start()
                 }
                 broadcastTxState(TX_STATE_FINISHED)
                 return
@@ -68,24 +71,28 @@ class JS8EngineService : Service() {
                 txMonitorWasAudioActive = true
                 // Enable PTT when audio TX starts
                 if (rigCtlConnected) {
-                    rigCtlClient?.let { rig ->
-                        Thread {
-                            val pttOn = rig.setPtt(true)
-                            Log.i(TAG, "TX audio started, PTT enabled: $pttOn")
-                        }.start()
-                    }
+                    Thread {
+                        val pttOn = when {
+                            rigCtlClient != null -> rigCtlClient!!.setPtt(true)
+                            icomClient != null -> icomClient!!.setPtt(true)
+                            else -> false
+                        }
+                        Log.i(TAG, "TX audio started, PTT enabled: $pttOn")
+                    }.start()
                 }
                 broadcastTxState(TX_STATE_STARTED)
             } else if (!audioActive && txMonitorWasAudioActive) {
                 txMonitorWasAudioActive = false
                 // Release PTT when audio stops (between packets)
                 if (rigCtlConnected) {
-                    rigCtlClient?.let { rig ->
-                        Thread {
-                            val pttOff = rig.setPtt(false)
-                            Log.i(TAG, "TX audio paused, PTT released: $pttOff")
-                        }.start()
-                    }
+                    Thread {
+                        val pttOff = when {
+                            rigCtlClient != null -> rigCtlClient!!.setPtt(false)
+                            icomClient != null -> icomClient!!.setPtt(false)
+                            else -> false
+                        }
+                        Log.i(TAG, "TX audio paused, PTT released: $pttOff")
+                    }.start()
                 }
                 broadcastTxState(TX_STATE_QUEUED)
             }
@@ -305,16 +312,25 @@ class JS8EngineService : Service() {
         val rigControlEnabled = prefs.getBoolean("rig_control_enabled", false)
         val rigType = prefs.getString("rig_type", "none")
 
-        if (!rigControlEnabled || rigType != "network") {
-            Log.i(TAG, "Rig control not enabled or not network type")
+        if (!rigControlEnabled || rigType == "none") {
+            Log.i(TAG, "Rig control not enabled")
             return
         }
 
+        when (rigType) {
+            "network" -> initializeNetworkRigControl()
+            "usb" -> initializeUsbRigControl()
+            else -> Log.w(TAG, "Unknown rig type: $rigType")
+        }
+    }
+
+    private fun initializeNetworkRigControl() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val host = prefs.getString("rigctld_host", "localhost") ?: "localhost"
         val portStr = prefs.getString("rigctld_port", "4532") ?: "4532"
         val port = portStr.toIntOrNull() ?: 4532
 
-        Log.i(TAG, "Initializing rig control: $host:$port")
+        Log.i(TAG, "Initializing network rig control: $host:$port")
 
         // Connect on background thread to avoid NetworkOnMainThreadException
         Thread {
@@ -333,9 +349,83 @@ class JS8EngineService : Service() {
                     }
                 }
             } catch (e: Exception) {
-                Log.e(TAG, "Error initializing rig control", e)
+                Log.e(TAG, "Error initializing network rig control", e)
                 mainHandler.post {
                     broadcastError("Error connecting to rigctld: ${e.message}")
+                    rigCtlErrorShown = true
+                }
+            }
+        }.start()
+    }
+
+    private fun initializeUsbRigControl() {
+        Log.i(TAG, "Initializing USB rig control (Icom CI-V)")
+
+        // Find USB device
+        val usbDevice = UsbPermissionHelper.findFirstUsbDevice(this)
+        if (usbDevice == null) {
+            Log.w(TAG, "No USB device found")
+            broadcastError("No USB device found. Please connect your radio.")
+            rigCtlErrorShown = true
+            return
+        }
+
+        Log.i(TAG, "Found USB device: ${usbDevice.deviceName}")
+
+        // Check/request USB permission
+        if (!UsbPermissionHelper.hasPermission(this, usbDevice)) {
+            Log.i(TAG, "Requesting USB permission...")
+            UsbPermissionHelper.requestPermission(this, usbDevice) { granted ->
+                if (granted) {
+                    connectToUsbDevice(usbDevice)
+                } else {
+                    Log.w(TAG, "USB permission denied")
+                    broadcastError("USB permission denied. Please grant USB access in Settings.")
+                    rigCtlErrorShown = true
+                }
+            }
+        } else {
+            connectToUsbDevice(usbDevice)
+        }
+    }
+
+    private fun connectToUsbDevice(usbDevice: android.hardware.usb.UsbDevice) {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val radioAddressStr = prefs.getString("icom_radio_model", "94") ?: "94"
+        val radioAddress = radioAddressStr.toIntOrNull(16)?.toByte() ?: 0x94.toByte()
+
+        Log.i(TAG, "Connecting to Icom radio at address 0x${radioAddressStr}")
+
+        // Connect on background thread
+        Thread {
+            try {
+                icomClient = IcomCIVClient(this, usbDevice, radioAddress)
+                rigCtlConnected = icomClient?.connect() == true
+                rigCtlErrorShown = false
+
+                mainHandler.post {
+                    if (rigCtlConnected) {
+                        Log.i(TAG, "Connected to Icom radio via USB")
+
+                        // Query current frequency from radio
+                        Thread {
+                            val currentFreq = icomClient?.getFrequency()
+                            if (currentFreq != null) {
+                                mainHandler.post {
+                                    broadcastRadioFrequency(currentFreq)
+                                }
+                            }
+                        }.start()
+                    } else {
+                        Log.w(TAG, "Failed to connect to Icom radio via USB")
+                        broadcastError("Failed to connect to Icom radio. Check USB connection.")
+                        rigCtlErrorShown = true
+                    }
+                }
+            } catch (e: Exception) {
+                Log.e(TAG, "Error connecting to USB rig", e)
+                mainHandler.post {
+                    broadcastError("Error connecting to USB rig: ${e.message}")
                     rigCtlErrorShown = true
                 }
             }
@@ -350,14 +440,17 @@ class JS8EngineService : Service() {
             stopTxMonitor()
 
             // Disconnect rig control on background thread
-            val clientToDisconnect = rigCtlClient
+            val networkClientToDisconnect = rigCtlClient
+            val usbClientToDisconnect = icomClient
             rigCtlClient = null
+            icomClient = null
             rigCtlConnected = false
             rigCtlErrorShown = false
 
-            if (clientToDisconnect != null) {
+            if (networkClientToDisconnect != null || usbClientToDisconnect != null) {
                 Thread {
-                    clientToDisconnect.disconnect()
+                    networkClientToDisconnect?.disconnect()
+                    usbClientToDisconnect?.disconnect()
                 }.start()
             }
 
@@ -434,6 +527,13 @@ class JS8EngineService : Service() {
     private fun broadcastAudioDevice(deviceName: String) {
         val intent = Intent(ACTION_AUDIO_DEVICE).apply {
             putExtra(EXTRA_AUDIO_DEVICE, deviceName)
+        }
+        LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+
+    private fun broadcastRadioFrequency(frequencyHz: Long) {
+        val intent = Intent(ACTION_RADIO_FREQUENCY).apply {
+            putExtra(EXTRA_RADIO_FREQUENCY_HZ, frequencyHz)
         }
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
     }
@@ -683,11 +783,13 @@ class JS8EngineService : Service() {
             return
         }
 
-        val rig = rigCtlClient ?: return
-
         // Run on background thread
         Thread {
-            val success = rig.setFrequency(frequencyHz)
+            val success = when {
+                rigCtlClient != null -> rigCtlClient!!.setFrequency(frequencyHz)
+                icomClient != null -> icomClient!!.setFrequency(frequencyHz)
+                else -> false
+            }
 
             mainHandler.post {
                 if (success) {
@@ -720,6 +822,7 @@ class JS8EngineService : Service() {
         const val ACTION_ERROR = "com.js8call.example.ACTION_ERROR"
         const val ACTION_TRANSMIT_MESSAGE = "com.js8call.example.ACTION_TRANSMIT_MESSAGE"
         const val ACTION_TX_STATE = "com.js8call.example.ACTION_TX_STATE"
+        const val ACTION_RADIO_FREQUENCY = "com.js8call.example.ACTION_RADIO_FREQUENCY"
 
         // Engine states
         const val STATE_STOPPED = "stopped"
@@ -755,6 +858,7 @@ class JS8EngineService : Service() {
         const val EXTRA_TX_FORCE_IDENTIFY = "tx_force_identify"
         const val EXTRA_TX_FORCE_DATA = "tx_force_data"
         const val EXTRA_TX_STATE = "tx_state"
+        const val EXTRA_RADIO_FREQUENCY_HZ = "radio_frequency_hz"
 
         const val TX_STATE_QUEUED = "queued"
         const val TX_STATE_STARTED = "started"

@@ -14,7 +14,7 @@
     <string-array name="rig_type_entries">
         <item>None</item>
         <item>Network (rigctld/FlRig)</item>
-        <item>USB Serial (future)</item>
+        <item>USB Serial (ICOM)</item>
     </string-array>
     <string-array name="rig_type_values">
         <item>none</item>
@@ -56,5 +56,27 @@
         <item>24922000</item>
         <item>28078000</item>
         <item>50318000</item>
+    </string-array>
+
+    <!-- Icom Radio Models -->
+    <string-array name="icom_model_entries">
+        <item>IC-7300</item>
+        <item>IC-7610</item>
+        <item>IC-9700</item>
+        <item>IC-705</item>
+        <item>IC-7851</item>
+        <item>IC-7100</item>
+        <item>IC-7410</item>
+        <item>IC-7600</item>
+    </string-array>
+    <string-array name="icom_model_addresses">
+        <item>94</item>  <!-- IC-7300 -->
+        <item>98</item>  <!-- IC-7610 -->
+        <item>A2</item>  <!-- IC-9700 -->
+        <item>A4</item>  <!-- IC-705 -->
+        <item>8E</item>  <!-- IC-7851 -->
+        <item>88</item>  <!-- IC-7100 -->
+        <item>80</item>  <!-- IC-7410 -->
+        <item>7A</item>  <!-- IC-7600 -->
     </string-array>
 </resources>

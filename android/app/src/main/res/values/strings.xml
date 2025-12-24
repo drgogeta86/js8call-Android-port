@@ -86,6 +86,10 @@
     <string name="settings_rigctld_host_summary">Network address (e.g., localhost or IP)</string>
     <string name="settings_rigctld_port">Rigctld Port</string>
     <string name="settings_rigctld_port_summary">TCP port number</string>
+    <string name="settings_icom_model">Icom Radio Model</string>
+    <string name="settings_icom_model_summary">Select your Icom radio model for USB control</string>
+    <string name="settings_icom_baud_rate">Icom Baud Rate</string>
+    <string name="settings_icom_baud_rate_summary">CI-V baud rate (usually 19200)</string>
 
     <string name="settings_psk_reporter">PSK Reporter</string>
     <string name="settings_psk_reporter_summary">Report spots to pskreporter.info</string>

@@ -93,6 +93,12 @@ class MonitorFragment : Fragment() {
                     val message = intent.getStringExtra(JS8EngineService.EXTRA_ERROR_MESSAGE) ?: "Unknown error"
                     viewModel.onError(message)
                 }
+                JS8EngineService.ACTION_RADIO_FREQUENCY -> {
+                    val frequencyHz = intent.getLongExtra(JS8EngineService.EXTRA_RADIO_FREQUENCY_HZ, 0L)
+                    if (frequencyHz > 0) {
+                        updateFrequencyFromRadio(frequencyHz)
+                    }
+                }
             }
         }
     }
@@ -152,6 +158,7 @@ class MonitorFragment : Fragment() {
             addAction(JS8EngineService.ACTION_SPECTRUM)
             addAction(JS8EngineService.ACTION_AUDIO_DEVICE)
             addAction(JS8EngineService.ACTION_ERROR)
+            addAction(JS8EngineService.ACTION_RADIO_FREQUENCY)
         }
         LocalBroadcastManager.getInstance(requireContext())
             .registerReceiver(broadcastReceiver, filter)
@@ -415,6 +422,36 @@ class MonitorFragment : Fragment() {
         Snackbar.make(requireView(), "Switching audio device...", Snackbar.LENGTH_SHORT).show()
     }
 
+    private fun updateFrequencyFromRadio(frequencyHz: Long) {
+        val frequencyValues = resources.getStringArray(R.array.js8_frequency_values)
+        val frequencyEntries = resources.getStringArray(R.array.js8_frequency_entries)
+
+        // Find the closest matching frequency in our list
+        var closestIndex = 0
+        var closestDiff = Long.MAX_VALUE
+
+        for (i in frequencyValues.indices) {
+            val freq = frequencyValues[i].toLongOrNull() ?: continue
+            val diff = kotlin.math.abs(freq - frequencyHz)
+            if (diff < closestDiff) {
+                closestDiff = diff
+                closestIndex = i
+            }
+        }
+
+        // Update spinner if we found a reasonable match (within 100 kHz)
+        if (closestDiff < 100000) {
+            isUpdatingFrequencySpinner = true
+            frequencySpinner.setSelection(closestIndex)
+            isUpdatingFrequencySpinner = false
+
+            android.util.Log.i("MonitorFragment", "Set frequency to ${frequencyEntries[closestIndex]} based on radio frequency $frequencyHz Hz")
+            Snackbar.make(requireView(), "Radio tuned to ${frequencyEntries[closestIndex]}", Snackbar.LENGTH_SHORT).show()
+        } else {
+            android.util.Log.d("MonitorFragment", "Radio frequency $frequencyHz Hz doesn't match any preset (closest: ${frequencyValues[closestIndex]} Hz, diff: $closestDiff Hz)")
+        }
+    }
+
     private fun setupFrequencySpinner() {
         // Get frequency arrays from resources
         val frequencyEntries = resources.getStringArray(R.array.js8_frequency_entries)
@@ -455,7 +492,7 @@ class MonitorFragment : Fragment() {
                 val rigControlEnabled = prefs.getBoolean("rig_control_enabled", false)
                 val rigType = prefs.getString("rig_type", "none")
 
-                if (rigControlEnabled && rigType == "network") {
+                if (rigControlEnabled && (rigType == "network" || rigType == "usb")) {
                     // Send frequency change to service
                     val intent = Intent(requireContext(), JS8EngineService::class.java).apply {
                         action = JS8EngineService.ACTION_SET_FREQUENCY
@@ -465,7 +502,7 @@ class MonitorFragment : Fragment() {
 
                     Snackbar.make(requireView(), "Setting frequency to ${frequencyEntries[position]}", Snackbar.LENGTH_SHORT).show()
                 } else {
-                    android.util.Log.d("MonitorFragment", "Rig control not enabled or not network type, skipping frequency change")
+                    android.util.Log.d("MonitorFragment", "Rig control not enabled or not supported type, skipping frequency change")
                 }
             }
 
