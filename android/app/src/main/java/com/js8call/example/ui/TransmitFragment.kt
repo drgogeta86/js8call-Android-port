@@ -11,6 +11,7 @@ import android.widget.TextView
 import android.content.Intent
 import android.widget.ArrayAdapter
 import android.widget.AutoCompleteTextView
+import android.widget.Filter
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import androidx.recyclerview.widget.RecyclerView
@@ -29,12 +30,13 @@ class TransmitFragment : Fragment() {
 
     private lateinit var messageEditText: TextInputEditText
     private lateinit var directedEditText: TextInputEditText
-    private lateinit var cqButton: Button
     private lateinit var sendButton: Button
     private lateinit var queueRecyclerView: RecyclerView
     private lateinit var queueEmptyText: TextView
     private lateinit var txStatusText: TextView
+    private lateinit var modeSelect: AutoCompleteTextView
     private lateinit var speedSelect: AutoCompleteTextView
+    private var selectedMode: TxMode = TxMode.FREE_TEXT
     private var selectedSubmode: Int = SUBMODE_NORMAL
 
     override fun onCreateView(
@@ -54,15 +56,16 @@ class TransmitFragment : Fragment() {
         // Find views
         messageEditText = view.findViewById(R.id.message_edit_text)
         directedEditText = view.findViewById(R.id.directed_edit_text)
-        cqButton = view.findViewById(R.id.cq_button)
         sendButton = view.findViewById(R.id.send_button)
         queueRecyclerView = view.findViewById(R.id.queue_recycler_view)
         queueEmptyText = view.findViewById(R.id.queue_empty_text)
         txStatusText = view.findViewById(R.id.tx_status_text)
+        modeSelect = view.findViewById(R.id.tx_mode_select)
         speedSelect = view.findViewById(R.id.tx_speed_select)
 
         // Set up listeners
         setupListeners()
+        setupModeSelector()
         setupSpeedSelector()
 
         // Observe ViewModel
@@ -89,15 +92,35 @@ class TransmitFragment : Fragment() {
             }
         })
 
-        // CQ button
-        cqButton.setOnClickListener {
-            viewModel.sendCQ()
-            Snackbar.make(requireView(), "CQ queued", Snackbar.LENGTH_SHORT).show()
-        }
-
         // Send button
         sendButton.setOnClickListener {
             sendMessage()
+        }
+    }
+
+    private fun setupModeSelector() {
+        val modeOptions = listOf(
+            ModeOption(getString(R.string.tx_mode_free_text), TxMode.FREE_TEXT),
+            ModeOption(getString(R.string.tx_mode_cq), TxMode.CQ),
+            ModeOption(getString(R.string.tx_mode_heartbeat), TxMode.HEARTBEAT),
+            ModeOption(getString(R.string.tx_mode_hb_ack), TxMode.HB_ACK)
+        )
+
+        val adapter = NoFilterArrayAdapter(
+            requireContext(),
+            android.R.layout.simple_list_item_1,
+            modeOptions.map { it.label }
+        )
+        modeSelect.setAdapter(adapter)
+
+        val defaultIndex = modeOptions.indexOfFirst { it.mode == TxMode.FREE_TEXT }
+            .takeIf { it >= 0 } ?: 0
+        modeSelect.setText(modeOptions[defaultIndex].label, false)
+        selectedMode = modeOptions[defaultIndex].mode
+
+        modeSelect.setOnItemClickListener { _, _, position, _ ->
+            selectedMode = modeOptions.getOrNull(position)?.mode ?: TxMode.FREE_TEXT
+            updateSendButtonState()
         }
     }
 
@@ -109,7 +132,7 @@ class TransmitFragment : Fragment() {
             SpeedOption(getString(R.string.tx_speed_turbo), SUBMODE_TURBO)
         )
 
-        val adapter = ArrayAdapter(
+        val adapter = NoFilterArrayAdapter(
             requireContext(),
             android.R.layout.simple_list_item_1,
             speedOptions.map { it.label }
@@ -158,25 +181,35 @@ class TransmitFragment : Fragment() {
 
     private fun updateSendButtonState() {
         val hasText = messageEditText.text?.isNotBlank() == true
-        sendButton.isEnabled = hasText
+        sendButton.isEnabled = selectedMode != TxMode.FREE_TEXT || hasText
     }
 
     private fun sendMessage() {
-        val text = messageEditText.text?.toString()?.trim() ?: ""
-        if (text.isEmpty()) {
-            Snackbar.make(requireView(), "Enter a message", Snackbar.LENGTH_SHORT).show()
-            return
+        val text = messageEditText.text?.toString()?.trim().orEmpty()
+        val (payloadText, directed) = when (selectedMode) {
+            TxMode.FREE_TEXT -> {
+                if (text.isEmpty()) {
+                    Snackbar.make(requireView(), "Enter a message", Snackbar.LENGTH_SHORT).show()
+                    return
+                }
+                val target = directedEditText.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }
+                text to target
+            }
+            TxMode.CQ -> "CQ CQ CQ" to null
+            TxMode.HEARTBEAT -> "HB" to null
+            TxMode.HB_ACK -> {
+                Snackbar.make(requireView(), "HB+ACK not implemented yet", Snackbar.LENGTH_SHORT).show()
+                return
+            }
         }
 
-        val directed = directedEditText.text?.toString()?.trim()?.takeIf { it.isNotEmpty() }
-
         // Queue the message
-        viewModel.queueMessage(text, directed)
+        viewModel.queueMessage(payloadText, directed)
 
         // Trigger native TX via the engine service
         val txIntent = Intent(requireContext(), JS8EngineService::class.java).apply {
             action = JS8EngineService.ACTION_TRANSMIT_MESSAGE
-            putExtra(JS8EngineService.EXTRA_TX_TEXT, text)
+            putExtra(JS8EngineService.EXTRA_TX_TEXT, payloadText)
             putExtra(JS8EngineService.EXTRA_TX_SUBMODE, selectedSubmode)
             if (directed != null) {
                 putExtra(JS8EngineService.EXTRA_TX_DIRECTED, directed)
@@ -194,6 +227,35 @@ class TransmitFragment : Fragment() {
     }
 
     private data class SpeedOption(val label: String, val submode: Int)
+    private data class ModeOption(val label: String, val mode: TxMode)
+
+    private enum class TxMode {
+        FREE_TEXT,
+        CQ,
+        HEARTBEAT,
+        HB_ACK
+    }
+
+    private class NoFilterArrayAdapter(
+        context: android.content.Context,
+        layoutResId: Int,
+        private val items: List<String>
+    ) : ArrayAdapter<String>(context, layoutResId, items) {
+        private val noFilter = object : Filter() {
+            override fun performFiltering(constraint: CharSequence?): FilterResults {
+                return FilterResults().apply {
+                    values = items
+                    count = items.size
+                }
+            }
+
+            override fun publishResults(constraint: CharSequence?, results: FilterResults?) {
+                notifyDataSetChanged()
+            }
+        }
+
+        override fun getFilter(): Filter = noFilter
+    }
 
     companion object {
         private const val SUBMODE_NORMAL = 0

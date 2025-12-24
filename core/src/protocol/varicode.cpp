@@ -113,7 +113,9 @@ constexpr std::uint16_t nusergrid = static_cast<std::uint16_t>(nmaxgrid + 1);
 // Simplified regexes to keep compilation working; behavior parity can be tuned later.
 const std::regex kGridPattern(R"(^[A-R]{2}[0-9]{2}([A-X]{2})?$)", std::regex::icase);
 // Capture groups: 1=type, 2=grid
-const std::regex kHeartbeatRe(R"(^\s*((?:HB ALT|HB|CQ\S*))\s*([A-Z0-9]{4,6})?.*$)", std::regex::icase);
+const std::regex kHeartbeatRe(
+    R"(^\s*(?:[@](?:ALLCALL|HB)\s+)?(CQ CQ CQ|CQ DX|CQ QRP|CQ CONTEST|CQ FIELD|CQ FD|CQ CQ|CQ|HB ALT|HB|HEARTBEAT(?!\s+SNR))(?:\s+([A-R]{2}[0-9]{2}))?.*$)",
+    std::regex::icase);
 // Capture groups: 1=callsign, 2=grid, 3=cmd, 4=num
 const std::regex kCompoundRe(R"(^\s*([A-Z0-9@/]+)(?:\s+([A-Z0-9]{4,6}))?(\s+[A-Z0-9 ?/+]+)?(\s*-?\d{0,3})?\s*$)", std::regex::icase);
 // Capture groups: 1=to, 2=cmd, 3=num

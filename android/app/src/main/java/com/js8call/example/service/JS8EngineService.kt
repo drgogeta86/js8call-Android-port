@@ -494,14 +494,15 @@ class JS8EngineService : Service() {
         val forceIdentify = intent.getBooleanExtra(EXTRA_TX_FORCE_IDENTIFY, false)
         val forceData = intent.getBooleanExtra(EXTRA_TX_FORCE_DATA, false)
         val effectiveForceIdentify = forceIdentify || callsign.isNotBlank()
+        val payloadText = applyGridIfHeartbeat(text, grid)
 
         Log.i(
             TAG,
-            "TX request: text_len=${text.length}, directed='${directed}', submode=$submode, freq=$audioFrequencyHz, delay=$txDelaySec, identify=$effectiveForceIdentify"
+            "TX request: text_len=${payloadText.length}, directed='${directed}', submode=$submode, freq=$audioFrequencyHz, delay=$txDelaySec, identify=$effectiveForceIdentify"
         )
 
         val ok = activeEngine.transmitMessage(
-            text = text,
+            text = payloadText,
             myCall = callsign,
             myGrid = grid,
             selectedCall = directed,
@@ -526,6 +527,18 @@ class JS8EngineService : Service() {
             putExtra(EXTRA_TX_STATE, state)
         }
         LocalBroadcastManager.getInstance(this).sendBroadcast(intent)
+    }
+
+    private fun applyGridIfHeartbeat(text: String, grid: String): String {
+        val trimmed = text.trim()
+        if (grid.length < 4) return trimmed
+        val grid4 = grid.substring(0, 4).uppercase()
+        val upper = trimmed.uppercase()
+        val isHeartbeat = upper.startsWith("CQ") || upper.startsWith("HB") || upper.startsWith("HEARTBEAT")
+        if (!isHeartbeat) return trimmed
+        val gridRegex = Regex("\\b[A-R]{2}[0-9]{2}\\b", RegexOption.IGNORE_CASE)
+        if (gridRegex.containsMatchIn(trimmed)) return trimmed
+        return "$trimmed $grid4".trim()
     }
 
     companion object {

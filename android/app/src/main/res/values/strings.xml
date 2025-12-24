@@ -44,6 +44,10 @@
     <string name="tx_queue">Queue</string>
     <string name="tx_queue_empty">Transmit queue empty</string>
     <string name="tx_mode">Mode</string>
+    <string name="tx_mode_cq">CQ</string>
+    <string name="tx_mode_heartbeat">Heartbeat</string>
+    <string name="tx_mode_free_text">Free Text</string>
+    <string name="tx_mode_hb_ack">HB+ACK</string>
     <string name="tx_speed">Speed</string>
     <string name="tx_speed_slow">Slow</string>
     <string name="tx_speed_normal">Normal</string>

@@ -84,15 +84,22 @@
         app:layout_constraintStart_toStartOf="parent"
         app:layout_constraintTop_toBottomOf="@id/tx_speed_layout">
 
-        <com.google.android.material.button.MaterialButton
-            android:id="@+id/cq_button"
-            style="@style/Widget.Material3.Button.TonalButton"
+        <com.google.android.material.textfield.TextInputLayout
+            android:id="@+id/tx_mode_layout"
+            style="@style/Widget.Material3.TextInputLayout.OutlinedBox.ExposedDropdownMenu"
             android:layout_width="0dp"
             android:layout_height="wrap_content"
             android:layout_marginEnd="8dp"
             android:layout_weight="1"
-            android:text="@string/tx_cq"
-            app:icon="@android:drawable/ic_dialog_info" />
+            android:hint="@string/tx_mode">
+
+            <com.google.android.material.textfield.MaterialAutoCompleteTextView
+                android:id="@+id/tx_mode_select"
+                android:layout_width="match_parent"
+                android:layout_height="wrap_content"
+                android:inputType="none" />
+
+        </com.google.android.material.textfield.TextInputLayout>
 
         <com.google.android.material.button.MaterialButton
             android:id="@+id/send_button"
