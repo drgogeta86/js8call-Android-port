@@ -119,10 +119,19 @@ const std::regex kHeartbeatRe(
 // Capture groups: 1=callsign, 2=grid, 3=cmd, 4=num
 const std::regex kCompoundRe(R"(^\s*([A-Z0-9@/]+)(?:\s+([A-Z0-9]{4,6}))?(\s+[A-Z0-9 ?/+]+)?(\s*-?\d{0,3})?\s*$)", std::regex::icase);
 // Capture groups: 1=to, 2=cmd, 3=num
-const std::regex kDirectedRe(R"(^\s*([A-Z0-9@/]+):?(\s*[A-Z0-9 ?/+]*)(\s*-?\d{0,3})?\s*$)", std::regex::icase);
+const std::regex kDirectedRe(R"(^\s*([A-Z0-9@/]+):?(\s*[A-Z0-9 ?/+]*?)(\s*[+-]?\d{1,3})?\s*$)", std::regex::icase);
 
 inline std::uint8_t pack_num_qtstyle(std::string const& num, bool* ok) {
-  return pack_num(num, ok);
+  try {
+    int val = std::stoi(num);
+    if (val < -30) val = -30;
+    if (val > 31) val = 31;
+    if (ok) *ok = true;
+    return static_cast<std::uint8_t>(val + 31);
+  } catch (...) {
+    if (ok) *ok = false;
+    return 0;
+  }
 }
 
 const std::unordered_map<int, std::string> kDbm2mwStr = {

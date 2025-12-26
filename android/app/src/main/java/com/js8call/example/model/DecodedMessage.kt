@@ -30,9 +30,9 @@ data class DecodedMessage(
 
     /**
      * Check if this is a single-frame message (not part of a multipart sequence).
-     * Type 0 means no flags set, Type 3 means both first and last (complete single frame).
+     * Single-frame messages have both first and last flags set (data or non-data).
      */
-    fun isSingleFrame(): Boolean = type == 0 || type == 3
+    fun isSingleFrame(): Boolean = isFirstFrame() && isLastFrame()
 
     /**
      * Get color resource ID based on SNR level.

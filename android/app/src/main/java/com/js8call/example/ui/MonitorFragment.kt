@@ -34,7 +34,6 @@ import com.js8call.example.service.JS8EngineService
 class MonitorFragment : Fragment() {
 
     private lateinit var viewModel: MonitorViewModel
-    private lateinit var decodeViewModel: DecodeViewModel
 
     private lateinit var waterfallView: WaterfallView
     private lateinit var statusText: TextView
@@ -61,17 +60,7 @@ class MonitorFragment : Fragment() {
                     handleEngineState(state)
                 }
                 JS8EngineService.ACTION_DECODE -> {
-                    val utc = intent.getIntExtra(JS8EngineService.EXTRA_UTC, 0)
                     val snr = intent.getIntExtra(JS8EngineService.EXTRA_SNR, 0)
-                    val dt = intent.getFloatExtra(JS8EngineService.EXTRA_DT, 0f)
-                    val freq = intent.getFloatExtra(JS8EngineService.EXTRA_FREQ, 0f)
-                    val text = intent.getStringExtra(JS8EngineService.EXTRA_TEXT) ?: ""
-                    val type = intent.getIntExtra(JS8EngineService.EXTRA_TYPE, 0)
-                    val quality = intent.getFloatExtra(JS8EngineService.EXTRA_QUALITY, 0f)
-                    val mode = intent.getIntExtra(JS8EngineService.EXTRA_MODE, 0)
-
-                    // Add to decode ViewModel
-                    decodeViewModel.addDecode(utc, snr, dt, freq, text, type, quality, mode)
 
                     // Update SNR in monitor ViewModel
                     viewModel.updateSnr(snr)
@@ -117,8 +106,6 @@ class MonitorFragment : Fragment() {
 
         // Initialize ViewModels
         viewModel = ViewModelProvider(this)[MonitorViewModel::class.java]
-        // Share decode view model across fragments
-        decodeViewModel = ViewModelProvider(requireActivity())[DecodeViewModel::class.java]
 
         // Find views
         waterfallView = view.findViewById(R.id.waterfall_view)

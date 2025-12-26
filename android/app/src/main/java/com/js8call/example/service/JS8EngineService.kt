@@ -790,8 +790,10 @@ class JS8EngineService : Service() {
             val snrText = formatSNR(snr)
             if (snrText.isEmpty()) return
             val submode = if (mode >= 0) mode else 0
-            Log.i(TAG, "Auto HB ACK: from=${heartbeat.from} snr=$snrText")
-            sendAutoReply("HEARTBEAT SNR $snrText", heartbeat.from, submode)
+            val target = heartbeat.from.trim().uppercase()
+            val payload = "HEARTBEAT SNR $snrText"
+            Log.i(TAG, "Auto HB ACK: from=$target snr=$snrText text='$payload'")
+            sendAutoReply(payload, target, submode)
             return
         }
 
@@ -899,7 +901,8 @@ class JS8EngineService : Service() {
         text: String,
         directed: String?,
         submode: Int,
-        requireDirected: Boolean = true
+        requireDirected: Boolean = true,
+        forceData: Boolean = false
     ) {
         val activeEngine = engine ?: return
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
@@ -923,7 +926,7 @@ class JS8EngineService : Service() {
             audioFrequencyHz = DEFAULT_AUDIO_FREQUENCY_HZ,
             txDelaySec = 0.0,
             forceIdentify = callsign.isNotBlank(),
-            forceData = false
+            forceData = forceData
         )
 
         if (ok) {

@@ -95,6 +95,59 @@ static JNIEnv* get_jni_env() {
 }
 
 // Render a human-readable JS8 message if possible; otherwise return the raw frame
+static bool is_callsign_like(std::string const& token) {
+  if (token.size() < 3 || token.size() > 12) return false;
+  if (!token.empty() && token.front() == '@') return false;
+  bool has_digit = false;
+  for (char c : token) {
+    unsigned char uc = static_cast<unsigned char>(c);
+    if (std::isdigit(uc)) {
+      has_digit = true;
+      continue;
+    }
+    if (std::isalpha(uc) || c == '/') continue;
+    return false;
+  }
+  return has_digit;
+}
+
+static std::string maybe_insert_callsign_prefix(std::string const& text) {
+  std::size_t first_sep = std::string::npos;
+  for (std::size_t i = 0; i < text.size(); ++i) {
+    if (std::isspace(static_cast<unsigned char>(text[i]))) {
+      first_sep = i;
+      break;
+    }
+  }
+  if (first_sep == std::string::npos) return text;
+  auto first_token = text.substr(0, first_sep);
+  if (first_token.find(':') != std::string::npos) return text;
+
+  std::vector<std::string> tokens;
+  tokens.reserve(4);
+  std::string current;
+  for (char c : text) {
+    if (std::isspace(static_cast<unsigned char>(c))) {
+      if (!current.empty()) {
+        tokens.push_back(current);
+        current.clear();
+        if (tokens.size() >= 2) break;
+      }
+      continue;
+    }
+    current.push_back(c);
+  }
+  if (!current.empty() && tokens.size() < 2) tokens.push_back(current);
+  if (tokens.size() < 2) return text;
+
+  if (!is_callsign_like(tokens[0]) || !is_callsign_like(tokens[1])) return text;
+
+  std::string rebuilt;
+  rebuilt.reserve(text.size() + 2);
+  rebuilt = tokens[0] + ": " + text.substr(first_sep + 1);
+  return rebuilt;
+}
+
 static std::string render_decoded_text(js8core::events::Decoded const& decoded) {
   using namespace js8core::protocol::varicode;
 
@@ -112,7 +165,7 @@ static std::string render_decoded_text(js8core::events::Decoded const& decoded) 
     auto data = unpack_fast_data_message(frame);
     __android_log_print(ANDROID_LOG_DEBUG, "JS8FrameDebug",
                         "unpack_fast_data returned: '%s'", data.c_str());
-    if (!data.empty()) return data;
+    if (!data.empty()) return maybe_insert_callsign_prefix(data);
     // Fast-data frames should not be treated as heartbeat/compound/directed.
     __android_log_print(ANDROID_LOG_WARN, "JS8FrameDebug",
                         "Fast data unpack failed, returning raw frame: '%s'", frame.c_str());
@@ -121,7 +174,7 @@ static std::string render_decoded_text(js8core::events::Decoded const& decoded) 
     auto data = unpack_data_message(frame);
     __android_log_print(ANDROID_LOG_DEBUG, "JS8FrameDebug",
                         "unpack_data returned: '%s'", data.c_str());
-    if (!data.empty()) return data;
+    if (!data.empty()) return maybe_insert_callsign_prefix(data);
   }
 
   // Heartbeat (most common for status beacons)
@@ -192,16 +245,24 @@ static std::string render_decoded_text(js8core::events::Decoded const& decoded) 
     std::uint8_t type = 0;
     auto parts = unpack_directed_message(frame, &type);
     if (!parts.empty()) {
-      std::string out;
-      for (std::size_t i = 0; i < parts.size(); ++i) {
-        auto part = parts[i];
+      std::vector<std::string> tokens;
+      tokens.reserve(parts.size());
+      for (auto part : parts) {
         while (!part.empty() && part.front() == ' ') part.erase(part.begin());
-        if (!part.empty()) {
-          if (!out.empty()) out += " ";
-          out += part;
-        }
+        if (!part.empty()) tokens.push_back(part);
       }
-      if (!out.empty()) return out;
+      if (!tokens.empty()) {
+        std::string out;
+        if (tokens.size() >= 2) {
+          out = tokens[0] + ": " + tokens[1];
+          for (std::size_t i = 2; i < tokens.size(); ++i) {
+            out += " " + tokens[i];
+          }
+        } else {
+          out = tokens[0];
+        }
+        if (!out.empty()) return out;
+      }
     }
   }
 

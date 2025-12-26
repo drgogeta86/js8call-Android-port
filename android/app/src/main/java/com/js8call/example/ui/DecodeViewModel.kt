@@ -27,7 +27,7 @@ class DecodeViewModel(application: Application) : AndroidViewModel(application) 
     // Message buffering for multipart messages
     private val messageBuffers = mutableMapOf<Int, MessageBuffer>()
     private val bufferTimeoutMs = 90_000L // 90 seconds
-    private val frequencyToleranceHz = 1.0f // Tolerance for frequency matching
+    private val frequencyToleranceHz = 10.0f // Match JS8 rx threshold for frame grouping
 
     /**
      * Add a new decoded message.
@@ -145,8 +145,14 @@ class DecodeViewModel(application: Application) : AndroidViewModel(application) 
      * Assemble a complete message from buffered frames.
      */
     private fun assembleMessage(buffer: MessageBuffer): DecodedMessage {
-        // Concatenate all frame texts
-        val assembledText = buffer.frames.joinToString("") { it.text }
+        val assembledText = buildString {
+            buffer.frames.forEachIndexed { index, frame ->
+                if (index > 0 && shouldInsertSpace(this, frame)) {
+                    append(' ')
+                }
+                append(frame.text)
+            }
+        }
 
         // Use the last frame's metadata (most recent)
         val lastFrame = buffer.frames.last()
@@ -162,6 +168,37 @@ class DecodeViewModel(application: Application) : AndroidViewModel(application) 
             mode = lastFrame.mode,
             timestamp = lastFrame.timestamp
         )
+    }
+
+    private fun shouldInsertSpace(builder: StringBuilder, nextFrame: DecodedMessage): Boolean {
+        if (builder.isEmpty()) return false
+        if (nextFrame.text.isEmpty()) return false
+        val nextText = nextFrame.text
+        var prevIndex = builder.length - 1
+        while (prevIndex >= 0 && builder[prevIndex].isWhitespace()) {
+            prevIndex--
+        }
+        if (prevIndex < 0) return false
+
+        var nextIndex = 0
+        while (nextIndex < nextText.length && nextText[nextIndex].isWhitespace()) {
+            nextIndex++
+        }
+        if (nextIndex >= nextText.length) return false
+
+        val prevChar = builder[prevIndex]
+        val nextChar = nextText[nextIndex]
+        if ((!prevChar.isLetterOrDigit() && prevChar != ':') || !nextChar.isLetterOrDigit()) {
+            return false
+        }
+
+        var tokenStart = prevIndex
+        while (tokenStart >= 0 && !builder[tokenStart].isWhitespace()) {
+            tokenStart--
+        }
+        val prevToken = builder.substring(tokenStart + 1, prevIndex + 1)
+        val hasDigit = prevToken.any { it.isDigit() }
+        return hasDigit || prevChar == ':'
     }
 
     /**

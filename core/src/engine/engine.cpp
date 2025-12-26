@@ -569,13 +569,6 @@ private:
           callbacks_.on_log(LogLevel::Info, log_msg);
         }
 
-#ifdef __ANDROID__
-        // ALWAYS log before the if check
-        __android_log_print(ANDROID_LOG_ERROR, "JS8Core",
-                           "ABOUT TO CHECK IF: ready_result=%d (submode=%d)",
-                           ready_result, static_cast<int>(sch.id));
-#endif
-
         if (ready_result) {
 #ifdef __ANDROID__
           __android_log_print(ANDROID_LOG_ERROR, "JS8Core",
