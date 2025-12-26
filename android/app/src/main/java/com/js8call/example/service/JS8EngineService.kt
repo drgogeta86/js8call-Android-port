@@ -42,6 +42,7 @@ class JS8EngineService : Service() {
     private var txMonitorActive = false
     private var txMonitorWasAudioActive = false
     private var callsignWarningShown = false
+    private var lastTxMessage: String = ""
     private val heartbeatRegex = Regex("^\\s*([^:]+):\\s+@HB\\s+HEARTBEAT\\b", RegexOption.IGNORE_CASE)
     private val txMonitorRunnable = object : Runnable {
         override fun run() {
@@ -743,6 +744,7 @@ class JS8EngineService : Service() {
 
         if (ok) {
             Log.i(TAG, "TX request accepted")
+            updateLastTxMessage(payloadText, directed)
             broadcastTxState(TX_STATE_QUEUED)
             startTxMonitor()
         } else {
@@ -795,12 +797,34 @@ class JS8EngineService : Service() {
 
         val directed = parseDirectedCommand(text) ?: return
         if (!shouldReplyToDirected(callsign, directed)) return
-        if (!directed.command.equals("INFO?", ignoreCase = true)) return
-        val info = prefs.getString(PREF_MY_INFO, "")?.trim().orEmpty()
-        if (info.isBlank()) return
         val submode = if (mode >= 0) mode else 0
-        Log.i(TAG, "Auto INFO reply: from=${directed.from}")
-        sendAutoReply("INFO $info", directed.from, submode)
+        when (directed.command.uppercase()) {
+            "SNR?", "?" -> {
+                val snrText = formatSNR(snr)
+                if (snrText.isEmpty()) return
+                Log.i(TAG, "Auto SNR reply: from=${directed.from} snr=$snrText")
+                sendAutoReply("SNR $snrText", directed.from, submode)
+            }
+            "INFO?" -> {
+                val info = prefs.getString(PREF_MY_INFO, "")?.trim().orEmpty()
+                if (info.isBlank()) return
+                Log.i(TAG, "Auto INFO reply: from=${directed.from}")
+                sendAutoReply("INFO $info", directed.from, submode)
+            }
+            "GRID?" -> {
+                val grid = prefs.getString("grid", "")?.trim().orEmpty().uppercase()
+                if (grid.isBlank()) return
+                Log.i(TAG, "Auto GRID reply: from=${directed.from}")
+                sendAutoReply("GRID $grid", directed.from, submode)
+            }
+            "AGN?" -> {
+                val message = lastTxMessage.trimEnd()
+                if (message.isBlank()) return
+                Log.i(TAG, "Auto AGN reply: from=${directed.from}")
+                sendAutoReply(message, null, submode, requireDirected = false)
+            }
+            else -> return
+        }
     }
 
     private fun parseHeartbeat(text: String): Heartbeat? {
@@ -871,7 +895,12 @@ class JS8EngineService : Service() {
         return String.format("%s%0${width}d", sign, snr)
     }
 
-    private fun sendAutoReply(text: String, directed: String, submode: Int) {
+    private fun sendAutoReply(
+        text: String,
+        directed: String?,
+        submode: Int,
+        requireDirected: Boolean = true
+    ) {
         val activeEngine = engine ?: return
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val callsign = getConfiguredCallsign()
@@ -882,8 +911,8 @@ class JS8EngineService : Service() {
         val grid = prefs.getString("grid", "")?.trim().orEmpty().uppercase()
 
         val payloadText = text.trim()
-        val directedCall = directed.trim().uppercase()
-        if (directedCall.isBlank()) return
+        val directedCall = directed?.trim().orEmpty().uppercase()
+        if (requireDirected && directedCall.isBlank()) return
 
         val ok = activeEngine.transmitMessage(
             text = payloadText,
@@ -899,6 +928,7 @@ class JS8EngineService : Service() {
 
         if (ok) {
             Log.i(TAG, "Autoreply queued: to=$directedCall text='$payloadText'")
+            updateLastTxMessage(payloadText, directedCall)
             broadcastTxState(TX_STATE_QUEUED)
             startTxMonitor()
         } else {
@@ -906,6 +936,32 @@ class JS8EngineService : Service() {
             broadcastError("Failed to start transmit")
             broadcastTxState(TX_STATE_FAILED)
         }
+    }
+
+    private fun updateLastTxMessage(text: String, directedCall: String) {
+        val built = buildTxMessage(text, directedCall)
+        if (built.isNotBlank()) {
+            lastTxMessage = built
+        }
+    }
+
+    private fun buildTxMessage(text: String, directedCall: String): String {
+        val trimmed = text.trim()
+        if (trimmed.isEmpty()) return ""
+        val selected = directedCall.trim().uppercase()
+        if (selected.isEmpty()) return trimmed
+        if (trimmed.startsWith("`")) return trimmed
+
+        val upper = trimmed.uppercase()
+        val lineStartsWithBase = upper.startsWith("@ALLCALL") ||
+            upper.startsWith("CQ") ||
+            upper.startsWith("HB") ||
+            upper.startsWith("HEARTBEAT")
+        if (lineStartsWithBase) return trimmed
+        if (trimmed.startsWith(selected, ignoreCase = true)) return trimmed
+
+        val sep = if (trimmed.startsWith(" ")) "" else " "
+        return selected + sep + trimmed
     }
 
     private fun applyGridIfHeartbeat(text: String, grid: String): String {
