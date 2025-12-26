@@ -117,6 +117,7 @@
     <string name="error_audio_start">Failed to start audio capture</string>
     <string name="error_no_rig">No rig connected</string>
     <string name="error_invalid_callsign">Invalid callsign format</string>
+    <string name="error_callsign_required">Please enter your callsign in Settings.</string>
     <string name="error_network">Network error: %s</string>
 
     <!-- Notifications -->

@@ -41,6 +41,7 @@ class JS8EngineService : Service() {
     private var selectedOutputDeviceId: Int = -1  // -1 means use default
     private var txMonitorActive = false
     private var txMonitorWasAudioActive = false
+    private var callsignWarningShown = false
     private val heartbeatRegex = Regex("^\\s*([^:]+):\\s+@HB\\s+HEARTBEAT\\b", RegexOption.IGNORE_CASE)
     private val txMonitorRunnable = object : Runnable {
         override fun run() {
@@ -707,7 +708,11 @@ class JS8EngineService : Service() {
         }
 
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val callsign = prefs.getString("callsign", "")?.trim().orEmpty().uppercase()
+        val callsign = getConfiguredCallsign()
+        if (callsign == null) {
+            warnMissingCallsign()
+            return
+        }
         val grid = prefs.getString("grid", "")?.trim().orEmpty().uppercase()
 
         val directed = intent.getStringExtra(EXTRA_TX_DIRECTED)?.trim().orEmpty()
@@ -770,8 +775,11 @@ class JS8EngineService : Service() {
     private fun maybeHandleAutoReply(text: String, snr: Int, mode: Int) {
         if (!isAutoreplyEnabled()) return
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val callsign = prefs.getString("callsign", "")?.trim().orEmpty().uppercase()
-        if (callsign.isBlank()) return
+        val callsign = getConfiguredCallsign()
+        if (callsign == null) {
+            warnMissingCallsign()
+            return
+        }
         if (isTransmitActive()) return
 
         val heartbeat = parseHeartbeat(text)
@@ -828,6 +836,20 @@ class JS8EngineService : Service() {
         return prefs.getBoolean(PREF_AUTOREPLY_ENABLED, false)
     }
 
+    private fun getConfiguredCallsign(): String? {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val callsign = prefs.getString("callsign", "")?.trim().orEmpty().uppercase()
+        if (callsign.isBlank()) return null
+        callsignWarningShown = false
+        return callsign
+    }
+
+    private fun warnMissingCallsign() {
+        if (callsignWarningShown) return
+        callsignWarningShown = true
+        broadcastError(getString(R.string.error_callsign_required))
+    }
+
     private fun isTransmitActive(): Boolean {
         val activeEngine = engine ?: return false
         return activeEngine.isTransmitting() || activeEngine.isTransmittingAudio()
@@ -852,9 +874,12 @@ class JS8EngineService : Service() {
     private fun sendAutoReply(text: String, directed: String, submode: Int) {
         val activeEngine = engine ?: return
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val callsign = prefs.getString("callsign", "")?.trim().orEmpty().uppercase()
+        val callsign = getConfiguredCallsign()
+        if (callsign == null) {
+            warnMissingCallsign()
+            return
+        }
         val grid = prefs.getString("grid", "")?.trim().orEmpty().uppercase()
-        if (callsign.isBlank()) return
 
         val payloadText = text.trim()
         val directedCall = directed.trim().uppercase()

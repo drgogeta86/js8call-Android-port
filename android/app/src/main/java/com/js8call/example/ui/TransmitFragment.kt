@@ -290,6 +290,14 @@ class TransmitFragment : Fragment() {
     }
 
     private fun sendMessage() {
+        if (!hasCallsignConfigured()) {
+            Snackbar.make(
+                requireView(),
+                R.string.error_callsign_required,
+                Snackbar.LENGTH_LONG
+            ).show()
+            return
+        }
         val text = messageEditText.text?.toString()?.trim().orEmpty()
         val (payloadText, directed) = when (selectedMode) {
             TxMode.FREE_TEXT -> {
@@ -325,6 +333,12 @@ class TransmitFragment : Fragment() {
             "Message queued"
         }
         Snackbar.make(requireView(), message, Snackbar.LENGTH_SHORT).show()
+    }
+
+    private fun hasCallsignConfigured(): Boolean {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(requireContext())
+        val callsign = prefs.getString("callsign", "")?.trim().orEmpty()
+        return callsign.isNotBlank()
     }
 
     private data class SpeedOption(val label: String, val submode: Int)
