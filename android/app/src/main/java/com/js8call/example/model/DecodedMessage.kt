@@ -39,11 +39,11 @@ data class DecodedMessage(
      */
     val snrColorRes: Int
         get() = when {
-            snr >= 10 -> R.color.snr_excellent   // >= +10 dB
-            snr >= 0 -> R.color.snr_good         // 0 to +9 dB
-            snr >= -5 -> R.color.snr_fair        // -5 to -1 dB
-            snr >= -10 -> R.color.snr_poor       // -10 to -6 dB
-            else -> R.color.snr_weak             // < -10 dB
+            snr >= -5 -> R.color.snr_excellent   // >= -5 dB
+            snr >= -10 -> R.color.snr_good       // -10 to -6 dB
+            snr >= -15 -> R.color.snr_fair       // -15 to -11 dB
+            snr >= -25 -> R.color.snr_poor       // -25 to -16 dB
+            else -> R.color.snr_weak             // < -25 dB
         }
 
     /**
