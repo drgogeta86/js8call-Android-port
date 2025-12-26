@@ -68,6 +68,12 @@ struct JS8Engine_Native {
   std::vector<float> decimation_taps;
   std::vector<int16_t> decimation_buffer;
   int decimation_pos = 0;
+
+  // Fractional resampling state for non-integer rate conversion (e.g., 44.1 kHz -> 12 kHz)
+  std::vector<float> resample_buffer;
+  double resample_pos = 0.0;
+  int resample_input_rate = 0;
+  int resample_output_rate = 0;
 };
 
 // Helper to get JNI environment for current thread
@@ -458,9 +464,71 @@ int js8_engine_submit_audio_raw(JS8Engine_Native* engine, const int16_t* samples
   if (input_sample_rate <= 0) return 0;
 
   int target_rate = engine->audio_format.sample_rate;
-  int factor = (target_rate > 0 && input_sample_rate % target_rate == 0)
-                   ? input_sample_rate / target_rate
-                   : 1;
+  if (target_rate <= 0) return 0;
+
+  if (input_sample_rate % target_rate != 0) {
+    if (engine->resample_input_rate != input_sample_rate ||
+        engine->resample_output_rate != target_rate) {
+      engine->resample_input_rate = input_sample_rate;
+      engine->resample_output_rate = target_rate;
+      engine->resample_buffer.clear();
+      engine->resample_pos = 0.0;
+      __android_log_print(ANDROID_LOG_INFO, "JS8Engine_Native",
+                         "Fractional resampler configured: input_rate=%d, target_rate=%d",
+                         input_sample_rate, target_rate);
+    }
+
+    engine->resample_buffer.reserve(engine->resample_buffer.size() + num_samples);
+    for (size_t i = 0; i < num_samples; ++i) {
+      engine->resample_buffer.push_back(static_cast<float>(samples[i]));
+    }
+
+    double step = static_cast<double>(input_sample_rate) / static_cast<double>(target_rate);
+    if (step <= 0.0) return 0;
+
+    std::vector<int16_t> resampled;
+    if (engine->resample_buffer.size() > 1) {
+      double available = static_cast<double>(engine->resample_buffer.size() - 1) - engine->resample_pos;
+      if (available > 0) {
+        std::size_t estimate = static_cast<std::size_t>(available / step) + 1;
+        resampled.reserve(estimate);
+        while (engine->resample_pos + 1.0 < engine->resample_buffer.size()) {
+          std::size_t idx = static_cast<std::size_t>(engine->resample_pos);
+          double frac = engine->resample_pos - static_cast<double>(idx);
+          float a = engine->resample_buffer[idx];
+          float b = engine->resample_buffer[idx + 1];
+          float sample = a + static_cast<float>(frac) * (b - a);
+          int value = static_cast<int>(std::lrint(sample));
+          value = std::clamp(value,
+                             static_cast<int>(std::numeric_limits<int16_t>::min()),
+                             static_cast<int>(std::numeric_limits<int16_t>::max()));
+          resampled.push_back(static_cast<int16_t>(value));
+          engine->resample_pos += step;
+        }
+      }
+    }
+
+    if (!resampled.empty()) {
+      std::size_t drop = static_cast<std::size_t>(engine->resample_pos);
+      if (drop > 0) {
+        if (drop >= engine->resample_buffer.size()) {
+          engine->resample_buffer.clear();
+          engine->resample_pos = 0.0;
+        } else {
+          engine->resample_buffer.erase(
+              engine->resample_buffer.begin(),
+              engine->resample_buffer.begin() +
+                  static_cast<std::vector<float>::difference_type>(drop));
+          engine->resample_pos -= static_cast<double>(drop);
+        }
+      }
+      return js8_engine_submit_audio(engine, resampled.data(), resampled.size(), timestamp_ns);
+    }
+
+    return 0;
+  }
+
+  int factor = input_sample_rate / target_rate;
 
   // Rebuild taps/buffer if factor changed or not initialized.
   if (factor != engine->decimation_factor || engine->decimation_taps.empty()) {
@@ -472,11 +540,10 @@ int js8_engine_submit_audio_raw(JS8Engine_Native* engine, const int16_t* samples
     __android_log_print(ANDROID_LOG_INFO, "JS8Engine_Native",
                        "Decimator configured: input_rate=%d, target_rate=%d, factor=%d, taps=%zu",
                        input_sample_rate, target_rate, factor, engine->decimation_taps.size());
-    if (target_rate > 0 && input_sample_rate % target_rate != 0) {
-      __android_log_print(ANDROID_LOG_WARN, "JS8Engine_Native",
-                         "Input rate %d not divisible by target %d; using fallback factor=1",
-                         input_sample_rate, target_rate);
-    }
+    engine->resample_buffer.clear();
+    engine->resample_pos = 0.0;
+    engine->resample_input_rate = 0;
+    engine->resample_output_rate = 0;
   }
 
   std::vector<int16_t> decimated;

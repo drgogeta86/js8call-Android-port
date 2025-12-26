@@ -34,7 +34,7 @@ class JS8AudioHelper(
     private var isRecording = false
 
     // Capture at 48kHz (native USB rate) and downsample natively to target rate
-    private val captureSampleRate = 48000
+    private var captureSampleRate = 48000
     private var actualSampleRate = captureSampleRate
 
     /**
@@ -82,33 +82,37 @@ class JS8AudioHelper(
             }
         }
 
-        val minBufferSize = AudioRecord.getMinBufferSize(
-            captureSampleRate,
-            CHANNEL_CONFIG,
-            AUDIO_FORMAT
-        )
-
-        if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
-            return false
-        }
-
-        // Use 2x minimum buffer size for balance between latency and reliability
-        val bufferSize = minBufferSize * 2
-
         try {
-            // Use MIC source which works with both built-in and USB audio devices
-            // Capture at 48kHz (native USB rate) for best quality
-            audioRecord = AudioRecord(
-                MediaRecorder.AudioSource.MIC,
-                captureSampleRate,
-                CHANNEL_CONFIG,
-                AUDIO_FORMAT,
-                bufferSize
-            )
+            val candidates = listOf(48000, 44100)
+            var bufferSize = 0
+            for (rate in candidates) {
+                val minBufferSize = AudioRecord.getMinBufferSize(
+                    rate,
+                    CHANNEL_CONFIG,
+                    AUDIO_FORMAT
+                )
+                if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
+                    continue
+                }
+                // Use 2x minimum buffer size for balance between latency and reliability
+                bufferSize = minBufferSize * 2
+                val record = AudioRecord(
+                    MediaRecorder.AudioSource.MIC,
+                    rate,
+                    CHANNEL_CONFIG,
+                    AUDIO_FORMAT,
+                    bufferSize
+                )
+                if (record.state == AudioRecord.STATE_INITIALIZED) {
+                    audioRecord = record
+                    captureSampleRate = rate
+                    break
+                } else {
+                    record.release()
+                }
+            }
 
-            if (audioRecord?.state != AudioRecord.STATE_INITIALIZED) {
-                audioRecord?.release()
-                audioRecord = null
+            if (audioRecord == null) {
                 return false
             }
 
@@ -143,22 +147,18 @@ class JS8AudioHelper(
             // Record the actual sample rate returned by the device. Some devices may not honor
             // the requested rate, so use the real value when handing data to native.
             actualSampleRate = audioRecord?.sampleRate ?: captureSampleRate
-            val decimationFactor = if (actualSampleRate % targetSampleRate == 0) {
-                actualSampleRate / targetSampleRate
-            } else {
-                1 // fallback; native layer will log/handle non-integer cases
-            }
+            val resampleRatio = actualSampleRate.toDouble() / targetSampleRate.toDouble()
 
             android.util.Log.i("JS8AudioHelper",
                 "Audio capture started: requested $captureSampleRate Hz, actual $actualSampleRate Hz, " +
                 "target $targetSampleRate Hz, handing raw audio to native downsampler " +
-                "(decimation factor: $decimationFactor), buffer size: $bufferSize samples")
+                "(resample ratio: ${"%.3f".format(resampleRatio)}), buffer size: $bufferSize samples")
 
             if (actualSampleRate % targetSampleRate != 0) {
-                android.util.Log.w(
+                android.util.Log.i(
                     "JS8AudioHelper",
                     "Actual sample rate $actualSampleRate not divisible by target $targetSampleRate; " +
-                        "decode quality may be impacted"
+                        "using fractional resampler"
                 )
             }
 
