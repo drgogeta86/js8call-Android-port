@@ -70,6 +70,8 @@
     <string name="settings_callsign_summary">Your amateur radio callsign</string>
     <string name="settings_grid">Grid Square</string>
     <string name="settings_grid_summary">Your Maidenhead locator</string>
+    <string name="settings_info">Info Message</string>
+    <string name="settings_info_summary">Reply text for INFO?</string>
 
     <string name="settings_sample_rate">Sample Rate</string>
     <string name="settings_sample_rate_summary">Audio sample rate (Hz)</string>
@@ -100,6 +102,8 @@
     <string name="settings_theme_summary">Light, dark, or system</string>
     <string name="settings_keep_screen_on">Keep Screen On</string>
     <string name="settings_keep_screen_on_summary">Prevent screen from dimming</string>
+    <string name="settings_autoreply">Enable Autoreply</string>
+    <string name="settings_autoreply_summary">Automatically respond to heartbeats with SNR</string>
 
     <!-- Permissions -->
     <string name="permission_audio_title">Microphone Permission</string>

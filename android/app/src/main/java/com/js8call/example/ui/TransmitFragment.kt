@@ -12,6 +12,7 @@ import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
+import android.content.SharedPreferences
 import android.content.res.ColorStateList
 import android.widget.ArrayAdapter
 import android.widget.AutoCompleteTextView
@@ -20,6 +21,7 @@ import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
+import androidx.preference.PreferenceManager
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.snackbar.Snackbar
 import com.google.android.material.textfield.TextInputEditText
@@ -45,6 +47,14 @@ class TransmitFragment : Fragment() {
     private var selectedMode: TxMode = TxMode.FREE_TEXT
     private var selectedSubmode: Int = SUBMODE_NORMAL
     private var defaultSendButtonTint: ColorStateList? = null
+    private var modeOptions: List<ModeOption> = emptyList()
+
+    private val preferenceListener =
+        SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
+            if (key == PREF_AUTOREPLY_ENABLED) {
+                updateModeOptions()
+            }
+        }
 
     private val broadcastReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -99,6 +109,19 @@ class TransmitFragment : Fragment() {
         unregisterBroadcastReceiver()
     }
 
+    override fun onStart() {
+        super.onStart()
+        PreferenceManager.getDefaultSharedPreferences(requireContext())
+            .registerOnSharedPreferenceChangeListener(preferenceListener)
+        updateModeOptions()
+    }
+
+    override fun onStop() {
+        PreferenceManager.getDefaultSharedPreferences(requireContext())
+            .unregisterOnSharedPreferenceChangeListener(preferenceListener)
+        super.onStop()
+    }
+
     private fun setupListeners() {
         // Message text changes
         messageEditText.addTextChangedListener(object : TextWatcher {
@@ -126,29 +149,46 @@ class TransmitFragment : Fragment() {
     }
 
     private fun setupModeSelector() {
-        val modeOptions = listOf(
-            ModeOption(getString(R.string.tx_mode_free_text), TxMode.FREE_TEXT),
-            ModeOption(getString(R.string.tx_mode_cq), TxMode.CQ),
-            ModeOption(getString(R.string.tx_mode_heartbeat), TxMode.HEARTBEAT),
-            ModeOption(getString(R.string.tx_mode_hb_ack), TxMode.HB_ACK)
-        )
-
-        val adapter = NoFilterArrayAdapter(
-            requireContext(),
-            android.R.layout.simple_list_item_1,
-            modeOptions.map { it.label }
-        )
-        modeSelect.setAdapter(adapter)
-
-        val defaultIndex = modeOptions.indexOfFirst { it.mode == TxMode.FREE_TEXT }
-            .takeIf { it >= 0 } ?: 0
-        modeSelect.setText(modeOptions[defaultIndex].label, false)
-        selectedMode = modeOptions[defaultIndex].mode
-
         modeSelect.setOnItemClickListener { _, _, position, _ ->
             selectedMode = modeOptions.getOrNull(position)?.mode ?: TxMode.FREE_TEXT
             updateSendButtonState()
         }
+    }
+
+    private fun updateModeOptions() {
+        modeOptions = listOf(
+            ModeOption(getString(R.string.tx_mode_free_text), TxMode.FREE_TEXT),
+            ModeOption(getString(R.string.tx_mode_cq), TxMode.CQ),
+            ModeOption(heartbeatLabel(), TxMode.HEARTBEAT)
+        )
+
+        val labels = modeOptions.map { it.label }
+        modeSelect.setAdapter(
+            NoFilterArrayAdapter(
+                requireContext(),
+                android.R.layout.simple_list_item_1,
+                labels
+            )
+        )
+
+        val selectedIndex = modeOptions.indexOfFirst { it.mode == selectedMode }
+            .takeIf { it >= 0 } ?: 0
+        modeSelect.setText(modeOptions[selectedIndex].label, false)
+        selectedMode = modeOptions[selectedIndex].mode
+        updateSendButtonState()
+    }
+
+    private fun heartbeatLabel(): String {
+        return if (isAutoreplyEnabled()) {
+            getString(R.string.tx_mode_hb_ack)
+        } else {
+            getString(R.string.tx_mode_heartbeat)
+        }
+    }
+
+    private fun isAutoreplyEnabled(): Boolean {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(requireContext())
+        return prefs.getBoolean(PREF_AUTOREPLY_ENABLED, false)
     }
 
     private fun setupSpeedSelector() {
@@ -208,12 +248,13 @@ class TransmitFragment : Fragment() {
 
         // Observe TX state
         viewModel.txState.observe(viewLifecycleOwner) { state ->
-            txStatusText.text = when (state) {
+            val safeState = state ?: TransmitState.IDLE
+            txStatusText.text = when (safeState) {
                 TransmitState.IDLE -> getString(R.string.tx_status_idle)
                 TransmitState.QUEUED -> getString(R.string.tx_status_queued)
                 TransmitState.TRANSMITTING -> getString(R.string.tx_status_transmitting)
             }
-            updateSendButtonTint(state)
+            updateSendButtonTint(safeState)
         }
 
         // Observe queue
@@ -261,10 +302,6 @@ class TransmitFragment : Fragment() {
             }
             TxMode.CQ -> "CQ CQ CQ" to null
             TxMode.HEARTBEAT -> "HB" to null
-            TxMode.HB_ACK -> {
-                Snackbar.make(requireView(), "HB+ACK not implemented yet", Snackbar.LENGTH_SHORT).show()
-                return
-            }
         }
 
         // Queue the message
@@ -296,8 +333,7 @@ class TransmitFragment : Fragment() {
     private enum class TxMode {
         FREE_TEXT,
         CQ,
-        HEARTBEAT,
-        HB_ACK
+        HEARTBEAT
     }
 
     private class NoFilterArrayAdapter(
@@ -326,5 +362,6 @@ class TransmitFragment : Fragment() {
         private const val SUBMODE_FAST = 1
         private const val SUBMODE_TURBO = 2
         private const val SUBMODE_SLOW = 4
+        private const val PREF_AUTOREPLY_ENABLED = "autoreply_enabled"
     }
 }

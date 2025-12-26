@@ -41,6 +41,7 @@ class JS8EngineService : Service() {
     private var selectedOutputDeviceId: Int = -1  // -1 means use default
     private var txMonitorActive = false
     private var txMonitorWasAudioActive = false
+    private val heartbeatRegex = Regex("^\\s*([^:]+):\\s+@HB\\s+HEARTBEAT\\b", RegexOption.IGNORE_CASE)
     private val txMonitorRunnable = object : Runnable {
         override fun run() {
             val activeEngine = engine
@@ -216,6 +217,7 @@ class JS8EngineService : Service() {
                     // Broadcast on main thread
                     mainHandler.post {
                         broadcastDecode(utc, snr, dt, freq, text, type, quality, mode)
+                        maybeHandleAutoReply(text, snr, mode)
                     }
                 }
 
@@ -765,6 +767,122 @@ class JS8EngineService : Service() {
         txMonitorHandler.removeCallbacks(txMonitorRunnable)
     }
 
+    private fun maybeHandleAutoReply(text: String, snr: Int, mode: Int) {
+        if (!isAutoreplyEnabled()) return
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val callsign = prefs.getString("callsign", "")?.trim().orEmpty().uppercase()
+        if (callsign.isBlank()) return
+        if (isTransmitActive()) return
+
+        val heartbeat = parseHeartbeat(text)
+        if (heartbeat != null) {
+            if (isSelfCallsign(callsign, heartbeat.from)) return
+            val snrText = formatSNR(snr)
+            if (snrText.isEmpty()) return
+            val submode = if (mode >= 0) mode else 0
+            Log.i(TAG, "Auto HB ACK: from=${heartbeat.from} snr=$snrText")
+            sendAutoReply("HEARTBEAT SNR $snrText", heartbeat.from, submode)
+            return
+        }
+
+        val directed = parseDirectedCommand(text) ?: return
+        if (!shouldReplyToDirected(callsign, directed)) return
+        if (!directed.command.equals("INFO?", ignoreCase = true)) return
+        val info = prefs.getString(PREF_MY_INFO, "")?.trim().orEmpty()
+        if (info.isBlank()) return
+        val submode = if (mode >= 0) mode else 0
+        Log.i(TAG, "Auto INFO reply: from=${directed.from}")
+        sendAutoReply("INFO $info", directed.from, submode)
+    }
+
+    private fun parseHeartbeat(text: String): Heartbeat? {
+        val match = heartbeatRegex.find(text) ?: return null
+        val from = match.groupValues.getOrNull(1)?.trim().orEmpty()
+        if (from.isBlank()) return null
+        return Heartbeat(from)
+    }
+
+    private data class Heartbeat(val from: String)
+
+    private fun parseDirectedCommand(text: String): DirectedCommand? {
+        val parts = text.trim().split(Regex("\\s+"), limit = 4)
+        if (parts.size < 3) return null
+        val from = parts[0].trim().trimEnd(':')
+        val to = parts[1].trim()
+        val command = parts[2].trim()
+        if (from.isBlank() || to.isBlank() || command.isBlank()) return null
+        return DirectedCommand(from, to, command)
+    }
+
+    private data class DirectedCommand(val from: String, val to: String, val command: String)
+
+    private fun shouldReplyToDirected(myCall: String, command: DirectedCommand): Boolean {
+        if (command.to.startsWith("@")) return false
+        if (!isSelfCallsign(myCall, command.to)) return false
+        if (isSelfCallsign(myCall, command.from)) return false
+        return true
+    }
+
+    private fun isAutoreplyEnabled(): Boolean {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        return prefs.getBoolean(PREF_AUTOREPLY_ENABLED, false)
+    }
+
+    private fun isTransmitActive(): Boolean {
+        val activeEngine = engine ?: return false
+        return activeEngine.isTransmitting() || activeEngine.isTransmittingAudio()
+    }
+
+    private fun isSelfCallsign(myCall: String, from: String): Boolean {
+        val mine = myCall.trim().uppercase()
+        val theirs = from.trim().uppercase()
+        if (mine == theirs) return true
+        val mineParts = mine.split("/")
+        val theirParts = theirs.split("/")
+        return mineParts.any { it.isNotBlank() && theirParts.contains(it) }
+    }
+
+    private fun formatSNR(snr: Int): String {
+        if (snr < -60 || snr > 60) return ""
+        val sign = if (snr >= 0) "+" else ""
+        val width = if (snr < 0) 3 else 2
+        return String.format("%s%0${width}d", sign, snr)
+    }
+
+    private fun sendAutoReply(text: String, directed: String, submode: Int) {
+        val activeEngine = engine ?: return
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val callsign = prefs.getString("callsign", "")?.trim().orEmpty().uppercase()
+        val grid = prefs.getString("grid", "")?.trim().orEmpty().uppercase()
+        if (callsign.isBlank()) return
+
+        val payloadText = text.trim()
+        val directedCall = directed.trim().uppercase()
+        if (directedCall.isBlank()) return
+
+        val ok = activeEngine.transmitMessage(
+            text = payloadText,
+            myCall = callsign,
+            myGrid = grid,
+            selectedCall = directedCall,
+            submode = submode,
+            audioFrequencyHz = DEFAULT_AUDIO_FREQUENCY_HZ,
+            txDelaySec = 0.0,
+            forceIdentify = callsign.isNotBlank(),
+            forceData = false
+        )
+
+        if (ok) {
+            Log.i(TAG, "Autoreply queued: to=$directedCall text='$payloadText'")
+            broadcastTxState(TX_STATE_QUEUED)
+            startTxMonitor()
+        } else {
+            Log.e(TAG, "Autoreply rejected")
+            broadcastError("Failed to start transmit")
+            broadcastTxState(TX_STATE_FAILED)
+        }
+    }
+
     private fun applyGridIfHeartbeat(text: String, grid: String): String {
         val trimmed = text.trim()
         if (grid.length < 4) return trimmed
@@ -807,6 +925,8 @@ class JS8EngineService : Service() {
 
     companion object {
         private const val TAG = "JS8EngineService"
+        private const val PREF_AUTOREPLY_ENABLED = "autoreply_enabled"
+        private const val PREF_MY_INFO = "my_info"
 
         // Actions
         const val ACTION_START = "com.js8call.example.ACTION_START"

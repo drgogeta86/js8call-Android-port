@@ -21,6 +21,13 @@
             app:useSimpleSummaryProvider="true"
             app:iconSpaceReserved="false" />
 
+        <EditTextPreference
+            app:key="my_info"
+            app:title="@string/settings_info"
+            app:summary="@string/settings_info_summary"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
     </PreferenceCategory>
 
     <!-- Audio Category -->
@@ -137,6 +144,13 @@
             app:entryValues="@array/theme_values"
             app:defaultValue="system"
             app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
+        <SwitchPreferenceCompat
+            app:key="autoreply_enabled"
+            app:title="@string/settings_autoreply"
+            app:summary="@string/settings_autoreply_summary"
+            app:defaultValue="false"
             app:iconSpaceReserved="false" />
 
         <SwitchPreferenceCompat
