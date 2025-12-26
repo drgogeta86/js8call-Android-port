@@ -48,6 +48,7 @@ class MonitorFragment : Fragment() {
     private var audioDeviceAdapter: ArrayAdapter<AudioDeviceItem>? = null
     private var availableDevices = mutableListOf<AudioDeviceItem>()
     private var isUpdatingSpinner = false
+    private var userInitiatedAudioSelection = false
 
     // Frequency management
     private var isUpdatingFrequencySpinner = false
@@ -338,9 +339,22 @@ class MonitorFragment : Fragment() {
         audioDeviceAdapter?.setDropDownViewResource(android.R.layout.simple_spinner_dropdown_item)
         audioDeviceSpinner.adapter = audioDeviceAdapter
 
+        audioDeviceSpinner.setOnTouchListener { _, _ ->
+            userInitiatedAudioSelection = true
+            false
+        }
+        audioDeviceSpinner.setOnFocusChangeListener { _, hasFocus ->
+            if (!hasFocus) {
+                userInitiatedAudioSelection = false
+            }
+        }
+
         // Set up selection listener
         audioDeviceSpinner.onItemSelectedListener = object : AdapterView.OnItemSelectedListener {
             override fun onItemSelected(parent: AdapterView<*>?, view: View?, position: Int, id: Long) {
+                val userInitiated = userInitiatedAudioSelection
+                userInitiatedAudioSelection = false
+                if (!userInitiated) return
                 if (isUpdatingSpinner) return
                 if (position < 0 || position >= availableDevices.size) return
 
