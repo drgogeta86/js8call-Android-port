@@ -536,13 +536,34 @@ private:
     void schedule_decodes() {
       if (!callbacks_.on_event) return;
 
+      int const k = decode_state_.params.kin;
+      int const k0 = k0_;
+
       // DEBUG: Confirm schedule_decodes() is being called
       static int sched_call_counter = 0;
       if (++sched_call_counter % 100 == 0 && callbacks_.on_log) {
         char log_msg[256];
         snprintf(log_msg, sizeof(log_msg),
-                "schedule_decodes CALLED: count=%d, total_samples=%d, k0=%d, schedules_size=%zu",
-                sched_call_counter, total_samples_, k0_, schedules_.size());
+                "schedule_decodes CALLED: count=%d, k=%d, k0=%d, total_samples=%d, schedules_size=%zu",
+                sched_call_counter, k, k0, total_samples_, schedules_.size());
+        callbacks_.on_log(LogLevel::Info, log_msg);
+      }
+
+      static int drift_log_counter = 0;
+      if (++drift_log_counter % 200 == 0 && callbacks_.on_log) {
+        auto const sample_rate = config_.sample_rate_hz ? config_.sample_rate_hz : kJs8RxSampleRate;
+        using clock = std::chrono::system_clock;
+        auto now = clock::now();
+        auto ms_since_epoch = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch());
+        int ms_in_minute = static_cast<int>(ms_since_epoch.count() % (kJs8NtMax * 1000));
+        int k_ms = static_cast<int>((static_cast<long long>(k) * 1000) / sample_rate);
+        int delta_ms = ms_in_minute - k_ms;
+        while (delta_ms > 30000) delta_ms -= 60000;
+        while (delta_ms < -30000) delta_ms += 60000;
+        char log_msg[256];
+        snprintf(log_msg, sizeof(log_msg),
+                "Timing drift: ms_in_minute=%d, k_ms=%d, delta_ms=%d, k=%d, sample_rate=%d",
+                ms_in_minute, k_ms, delta_ms, k, sample_rate);
         callbacks_.on_log(LogLevel::Info, log_msg);
       }
 
@@ -557,7 +578,7 @@ private:
 
         // isDecodeReady() returns true when we have a complete decode window ready
         // It sets start to the absolute position in the circular buffer
-        bool ready_result = isDecodeReady(sch, total_samples_, k0_, &start, &size);
+        bool ready_result = isDecodeReady(sch, k, k0, &start, &size);
 
         // DEBUG: Log the result
         static int result_counter = 0;
@@ -621,16 +642,16 @@ private:
 
             char log_msg[512];
             snprintf(log_msg, sizeof(log_msg),
-                    "Decode ready at UTC %02d:%02d:%02d.%03d, submode_id=%d, kpos_abs=%d, kpos_wrapped=%d, ksz=%d, total_samples=%d, k0=%d",
+                    "Decode ready at UTC %02d:%02d:%02d.%03d, submode_id=%d, kpos_abs=%d, kpos_wrapped=%d, ksz=%d, k=%d, k0=%d, total_samples=%d",
                     utc_tm.tm_hour, utc_tm.tm_min, utc_tm.tm_sec, ms_in_second,
-                    static_cast<int>(sch.id), start, wrapped_start, size, total_samples_, k0_);
+                    static_cast<int>(sch.id), start, wrapped_start, size, k, k0, total_samples_);
             callbacks_.on_log(LogLevel::Info, log_msg);
           }
         }
       }
 
       // Update k0 for next call
-      k0_ = total_samples_;
+      k0_ = k;
 
       if (!any) return;
 

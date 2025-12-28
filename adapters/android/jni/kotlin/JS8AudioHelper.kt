@@ -4,8 +4,12 @@ import android.content.Context
 import android.content.pm.PackageManager
 import android.media.AudioFormat
 import android.media.AudioManager
+import android.media.AudioDeviceInfo
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.media.audiofx.AcousticEchoCanceler
+import android.media.audiofx.AutomaticGainControl
+import android.media.audiofx.NoiseSuppressor
 import android.os.Handler
 import android.os.HandlerThread
 import android.Manifest
@@ -36,6 +40,10 @@ class JS8AudioHelper(
     // Capture at 48kHz (native USB rate) and downsample natively to target rate
     private var captureSampleRate = 48000
     private var actualSampleRate = captureSampleRate
+    private val audioSource = MediaRecorder.AudioSource.MIC
+    private var agc: AutomaticGainControl? = null
+    private var noiseSuppressor: NoiseSuppressor? = null
+    private var echoCanceler: AcousticEchoCanceler? = null
 
     /**
      * Set preferred audio input device.
@@ -54,7 +62,7 @@ class JS8AudioHelper(
                     if (device != null) {
                         val success = record.setPreferredDevice(device)
                         android.util.Log.i("JS8AudioHelper",
-                            "Set preferred device: ${device.productName} (ID: $deviceId), success=$success")
+                            "Set preferred device: ${device.productName} (ID: $deviceId, type=${deviceTypeName(device.type)}), success=$success")
                     } else {
                         android.util.Log.w("JS8AudioHelper",
                             "Device ID $deviceId not found")
@@ -97,7 +105,7 @@ class JS8AudioHelper(
                 // Use 2x minimum buffer size for balance between latency and reliability
                 bufferSize = minBufferSize * 2
                 val record = AudioRecord(
-                    MediaRecorder.AudioSource.MIC,
+                    audioSource,
                     rate,
                     CHANNEL_CONFIG,
                     AUDIO_FORMAT,
@@ -124,11 +132,13 @@ class JS8AudioHelper(
                 if (device != null) {
                     val success = audioRecord?.setPreferredDevice(device) ?: false
                     android.util.Log.i("JS8AudioHelper",
-                        "Set preferred device on startup: ${device.productName} (ID: $preferredDeviceId), success=$success")
+                        "Set preferred device on startup: ${device.productName} (ID: $preferredDeviceId, type=${deviceTypeName(device.type)}), success=$success")
                 } else {
                     android.util.Log.w("JS8AudioHelper",
                         "Preferred device ID $preferredDeviceId not found, using default")
                 }
+            } else {
+                android.util.Log.i("JS8AudioHelper", "Using default input device (no preferred device set)")
             }
 
             // Enable low-latency mode if available (API 26+)
@@ -143,6 +153,7 @@ class JS8AudioHelper(
 
             audioRecord?.startRecording()
             isRecording = true
+            audioRecord?.let { configureAudioEffects(it) }
 
             // Record the actual sample rate returned by the device. Some devices may not honor
             // the requested rate, so use the real value when handing data to native.
@@ -151,7 +162,8 @@ class JS8AudioHelper(
 
             android.util.Log.i("JS8AudioHelper",
                 "Audio capture started: requested $captureSampleRate Hz, actual $actualSampleRate Hz, " +
-                "target $targetSampleRate Hz, handing raw audio to native downsampler " +
+                "target $targetSampleRate Hz, source=${audioSourceName(audioSource)}, " +
+                "handing raw audio to native downsampler " +
                 "(resample ratio: ${"%.3f".format(resampleRatio)}), buffer size: $bufferSize samples")
 
             if (actualSampleRate % targetSampleRate != 0) {
@@ -190,6 +202,7 @@ class JS8AudioHelper(
         audioRecord?.stop()
         audioRecord?.release()
         audioRecord = null
+        releaseAudioEffects()
     }
 
     override fun close() {
@@ -202,13 +215,29 @@ class JS8AudioHelper(
         val buffer = ShortArray(bufferSize)
         var totalSamples = 0L
         var lastLogTime = System.currentTimeMillis()
+        var lastReadNs = System.nanoTime()
 
         while (isRecording) {
+            val readStartNs = System.nanoTime()
             val samplesRead = recorder.read(buffer, 0, bufferSize)
+            val readEndNs = System.nanoTime()
+            val gapMs = (readStartNs - lastReadNs) / 1_000_000
+            val readDurationMs = (readEndNs - readStartNs) / 1_000_000
+            if (gapMs > 200) {
+                android.util.Log.w("JS8AudioHelper",
+                    "Audio read gap: gapMs=$gapMs, lastReadMs=${readDurationMs}, samplesRead=$samplesRead")
+            } else if (readDurationMs > 200) {
+                android.util.Log.w("JS8AudioHelper",
+                    "Audio read slow: durationMs=$readDurationMs, samplesRead=$samplesRead")
+            }
+            lastReadNs = readEndNs
 
             if (samplesRead > 0) {
                 val timestamp = System.nanoTime()
                 val success = engine.submitAudioRaw(buffer, samplesRead, actualSampleRate, timestamp)
+                if (!success) {
+                    android.util.Log.w("JS8AudioHelper", "submitAudioRaw failed for $samplesRead samples")
+                }
 
                 totalSamples += samplesRead
 
@@ -235,6 +264,114 @@ class JS8AudioHelper(
                 }
             }
         }
+    }
+
+    private fun audioSourceName(source: Int): String {
+        return when (source) {
+            MediaRecorder.AudioSource.MIC -> "MIC"
+            MediaRecorder.AudioSource.UNPROCESSED -> "UNPROCESSED"
+            MediaRecorder.AudioSource.VOICE_RECOGNITION -> "VOICE_RECOGNITION"
+            MediaRecorder.AudioSource.VOICE_COMMUNICATION -> "VOICE_COMMUNICATION"
+            else -> "source=$source"
+        }
+    }
+
+    private fun deviceTypeName(type: Int): String {
+        return when (type) {
+            AudioDeviceInfo.TYPE_BUILTIN_MIC -> "builtin"
+            AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired"
+            AudioDeviceInfo.TYPE_USB_DEVICE,
+            AudioDeviceInfo.TYPE_USB_ACCESSORY,
+            AudioDeviceInfo.TYPE_USB_HEADSET -> "usb"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "bluetooth"
+            AudioDeviceInfo.TYPE_LINE_ANALOG,
+            AudioDeviceInfo.TYPE_LINE_DIGITAL -> "line"
+            else -> "type=$type"
+        }
+    }
+
+    private fun configureAudioEffects(record: AudioRecord) {
+        val sessionId = record.audioSessionId
+        if (sessionId <= 0) {
+            android.util.Log.w("JS8AudioHelper", "Audio effects not configured: invalid sessionId=$sessionId")
+            return
+        }
+
+        android.util.Log.i("JS8AudioHelper", "Audio effects: sessionId=$sessionId")
+
+        configureAgc(sessionId)
+        configureNoiseSuppressor(sessionId)
+        configureEchoCanceler(sessionId)
+    }
+
+    private fun configureAgc(sessionId: Int) {
+        if (!AutomaticGainControl.isAvailable()) {
+            android.util.Log.i("JS8AudioHelper", "AGC not available")
+            return
+        }
+        try {
+            agc?.release()
+            agc = AutomaticGainControl.create(sessionId)
+            if (agc == null) {
+                android.util.Log.w("JS8AudioHelper", "AGC available but create() failed")
+                return
+            }
+            val wasEnabled = agc?.enabled ?: false
+            agc?.enabled = false
+            android.util.Log.i("JS8AudioHelper", "AGC: wasEnabled=$wasEnabled, nowEnabled=${agc?.enabled}")
+        } catch (e: Exception) {
+            android.util.Log.w("JS8AudioHelper", "AGC error: ${e.message}")
+        }
+    }
+
+    private fun configureNoiseSuppressor(sessionId: Int) {
+        if (!NoiseSuppressor.isAvailable()) {
+            android.util.Log.i("JS8AudioHelper", "NoiseSuppressor not available")
+            return
+        }
+        try {
+            noiseSuppressor?.release()
+            noiseSuppressor = NoiseSuppressor.create(sessionId)
+            if (noiseSuppressor == null) {
+                android.util.Log.w("JS8AudioHelper", "NoiseSuppressor available but create() failed")
+                return
+            }
+            val wasEnabled = noiseSuppressor?.enabled ?: false
+            noiseSuppressor?.enabled = false
+            android.util.Log.i("JS8AudioHelper", "NoiseSuppressor: wasEnabled=$wasEnabled, nowEnabled=${noiseSuppressor?.enabled}")
+        } catch (e: Exception) {
+            android.util.Log.w("JS8AudioHelper", "NoiseSuppressor error: ${e.message}")
+        }
+    }
+
+    private fun configureEchoCanceler(sessionId: Int) {
+        if (!AcousticEchoCanceler.isAvailable()) {
+            android.util.Log.i("JS8AudioHelper", "AcousticEchoCanceler not available")
+            return
+        }
+        try {
+            echoCanceler?.release()
+            echoCanceler = AcousticEchoCanceler.create(sessionId)
+            if (echoCanceler == null) {
+                android.util.Log.w("JS8AudioHelper", "AcousticEchoCanceler available but create() failed")
+                return
+            }
+            val wasEnabled = echoCanceler?.enabled ?: false
+            echoCanceler?.enabled = false
+            android.util.Log.i("JS8AudioHelper", "AcousticEchoCanceler: wasEnabled=$wasEnabled, nowEnabled=${echoCanceler?.enabled}")
+        } catch (e: Exception) {
+            android.util.Log.w("JS8AudioHelper", "AcousticEchoCanceler error: ${e.message}")
+        }
+    }
+
+    private fun releaseAudioEffects() {
+        agc?.release()
+        agc = null
+        noiseSuppressor?.release()
+        noiseSuppressor = null
+        echoCanceler?.release()
+        echoCanceler = null
     }
 }
 
