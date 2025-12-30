@@ -1,4 +1,7 @@
-#CURRENTLY THE ANDROID PORT IS *WILDLY* BETA. The interface has many parts that are stubbed and do NOT function in any way. Currently only the decoder works. The design of the GUI *WILL* change. Not responsible for this code doing unexpected things, draining all of your batteries, or kidnapping your pets. User beware. 
+#CURRENTLY THE ANDROID PORT IS *WILDLY* BETA. The interface has many parts that are stubbed and do NOT function in any way. Currently RX and TX work, HOWEVER 
+lower end Android devices will likely have issues decoding as the decoder pipeline is heavy. It works great on my Pixel 9 Pro, but will not work at all on my 
+Amazon Fire tablet. Basic network rig control via rigctld works, as does serial in ICOM format. Other radios will be supported in the future. The design of the 
+GUI *WILL* change. Not responsible for this code doing unexpected things, draining all of your batteries, or kidnapping your pets. User beware.
 
 # JS8Call-improved
 JS8Call-improved is continued development of the original JS8Call project. Most of the same developers have worked on both projects. With JS8Call-improved we are able to implement bug fixes and features must faster so development can proceed at a faster pace.
