@@ -5,6 +5,7 @@
 #include <array>
 #include <cmath>
 #include <complex>
+#include <condition_variable>
 #include <cstring>
 #include <deque>
 #include "js8core/compat/numbers.hpp"
@@ -12,6 +13,7 @@
 #include <optional>
 #include <span>
 #include <string>
+#include <thread>
 #include <utility>
 #include <vector>
 
@@ -94,6 +96,11 @@ public:
       config_.submodes = mask;
     }
     init_schedules();
+    start_decode_worker();
+  }
+
+  ~Js8EngineImpl() override {
+    stop_decode_worker();
   }
 
   bool start() override {
@@ -657,26 +664,10 @@ private:
 
       populate_decode_metadata();
 
-      // Log decode parameters before calling decoder
-      if (callbacks_.on_log) {
-        char log_msg[512];
-        snprintf(log_msg, sizeof(log_msg),
-                "Calling legacy_decode: nsubmodes=0x%x, freq_range=%d-%d Hz, nfqso=%d Hz, sample_rate=%d, buffer_size=%zu, callback=%s",
-                decode_state_.params.nsubmodes, decode_state_.params.nfa,
-                decode_state_.params.nfb, decode_state_.params.nfqso,
-                config_.sample_rate_hz, decode_state_.samples.size(),
-                callbacks_.on_event ? "SET" : "NULL");
-        callbacks_.on_log(LogLevel::Info, log_msg);
-      }
-
-      std::size_t decode_count = legacy_decode(decode_state_, callbacks_.on_event);
-
-      if (callbacks_.on_log) {
-        char log_msg[256];
-        snprintf(log_msg, sizeof(log_msg),
-                "legacy_decode returned: %zu decodes", decode_count);
-        callbacks_.on_log(LogLevel::Info, log_msg);
-      }
+      DecodeState snapshot;
+      snapshot.params = decode_state_.params;
+      snapshot.samples = decode_state_.samples;
+      enqueue_decode(std::move(snapshot));
     }
 
     bool start_tx_output() {
@@ -942,6 +933,67 @@ private:
     bool tx_output_logged_ = false;
     std::atomic<bool> tx_active_{false};
     bool tx_output_started_{false};
+
+    std::thread decode_thread_;
+    std::mutex decode_mutex_;
+    std::condition_variable decode_cv_;
+    std::optional<DecodeState> pending_decode_;
+    bool decode_stop_{false};
+
+    void start_decode_worker() {
+      decode_thread_ = std::thread([this]() { decode_worker_loop(); });
+    }
+
+    void stop_decode_worker() {
+      {
+        std::lock_guard<std::mutex> lock(decode_mutex_);
+        decode_stop_ = true;
+      }
+      decode_cv_.notify_one();
+      if (decode_thread_.joinable()) decode_thread_.join();
+    }
+
+    void enqueue_decode(DecodeState snapshot) {
+      {
+        std::lock_guard<std::mutex> lock(decode_mutex_);
+        pending_decode_ = std::move(snapshot);
+      }
+      decode_cv_.notify_one();
+    }
+
+    void decode_worker_loop() {
+      for (;;) {
+        std::optional<DecodeState> task;
+        {
+          std::unique_lock<std::mutex> lock(decode_mutex_);
+          decode_cv_.wait(lock, [&]() { return decode_stop_ || pending_decode_.has_value(); });
+          if (decode_stop_) return;
+          task = std::move(pending_decode_);
+          pending_decode_.reset();
+        }
+
+        if (!task) continue;
+
+        if (callbacks_.on_log) {
+          char log_msg[512];
+          snprintf(log_msg, sizeof(log_msg),
+                   "Calling legacy_decode: nsubmodes=0x%x, freq_range=%d-%d Hz, nfqso=%d Hz, sample_rate=%d, buffer_size=%zu, callback=%s",
+                   task->params.nsubmodes, task->params.nfa, task->params.nfb, task->params.nfqso,
+                   config_.sample_rate_hz, task->samples.size(),
+                   callbacks_.on_event ? "SET" : "NULL");
+          callbacks_.on_log(LogLevel::Info, log_msg);
+        }
+
+        std::size_t decode_count = legacy_decode(*task, callbacks_.on_event);
+
+        if (callbacks_.on_log) {
+          char log_msg[256];
+          snprintf(log_msg, sizeof(log_msg),
+                   "legacy_decode returned: %zu decodes", decode_count);
+          callbacks_.on_log(LogLevel::Info, log_msg);
+        }
+      }
+    }
   };
 
 }  // namespace
