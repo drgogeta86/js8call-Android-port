@@ -97,10 +97,12 @@ public:
     }
     init_schedules();
     start_decode_worker();
+    start_spectrum_worker();
   }
 
   ~Js8EngineImpl() override {
     stop_decode_worker();
+    stop_spectrum_worker();
   }
 
   bool start() override {
@@ -189,11 +191,12 @@ public:
                                static_cast<int>(decode_state_.samples.size());
     total_samples_ += static_cast<int>(frames);
 
-    // Emit a lightweight spectrum frame for UI consumers.
+    // Emit a lightweight spectrum frame for UI consumers at a throttled rate.
     if (callbacks_.on_event && frames > 0) {
-      auto spectrum = compute_spectrum(raw, frames, buffer.format.channels, buffer.format.sample_rate);
-      if (!spectrum.bins.empty()) {
-        callbacks_.on_event(spectrum);
+      auto const now = std::chrono::steady_clock::now();
+      if (now - last_spectrum_time_ >= kSpectrumInterval) {
+        last_spectrum_time_ = now;
+        enqueue_spectrum(raw, frames, buffer.format.channels, buffer.format.sample_rate);
       }
     }
 
@@ -826,12 +829,12 @@ private:
       return v + 1;
     }
 
-    static events::Spectrum compute_spectrum(const std::int16_t* data,
-                                             std::size_t frames,
-                                             int channels,
-                                             int sample_rate) {
-      events::Spectrum spec;
-      if (!data || frames == 0 || sample_rate <= 0) return spec;
+    bool compute_spectrum(const std::int16_t* data,
+                          std::size_t frames,
+                          int channels,
+                          int sample_rate,
+                          events::Spectrum& spec) {
+      if (!data || frames == 0 || sample_rate <= 0) return false;
 
       // Limit FFT size for cost; keep it power of two for simplicity.
       // Clamp to the largest power-of-two that fits in the provided frame count
@@ -843,35 +846,41 @@ private:
         n = next_pow2(n);
         if (n > max_n) n >>= 1;
       }
-      if (n < 64) return spec;
+      if (n < 64) return false;
 
-      std::vector<double> window(n);
       constexpr double two_pi = 2.0 * std::numbers::pi;
-      for (std::size_t i = 0; i < n; ++i) {
-        window[i] = 0.5 * (1.0 - std::cos(two_pi * static_cast<double>(i) / static_cast<double>(n - 1)));
+      if (n != spectrum_n_) {
+        spectrum_n_ = n;
+        spectrum_window_.assign(n, 0.0);
+        spectrum_samples_.assign(n, 0.0);
+        spectrum_fft_.assign(n, std::complex<double>{});
+        for (std::size_t i = 0; i < n; ++i) {
+          spectrum_window_[i] =
+              0.5 * (1.0 - std::cos(two_pi * static_cast<double>(i) / static_cast<double>(n - 1)));
+        }
       }
 
       // Mono mix: pick first channel.
-      std::vector<double> samples(n);
       double power_sum = 0.0;
       double peak = 0.0;
       for (std::size_t i = 0; i < n; ++i) {
         auto v = static_cast<double>(data[i * channels]);
         power_sum += v * v;
         peak = std::max(peak, std::abs(v));
-        samples[i] = v * window[i];
+        spectrum_samples_[i] = v * spectrum_window_[i];
       }
 
       // In-place iterative radix-2 Cooley-Tukey FFT
-      std::vector<std::complex<double>> fft(n);
-      for (std::size_t i = 0; i < n; ++i) fft[i] = std::complex<double>(samples[i], 0.0);
+      for (std::size_t i = 0; i < n; ++i) {
+        spectrum_fft_[i] = std::complex<double>(spectrum_samples_[i], 0.0);
+      }
 
       // Bit reversal
       for (std::size_t i = 1, j = 0; i < n; ++i) {
         std::size_t bit = n >> 1;
         for (; j & bit; bit >>= 1) j ^= bit;
         j ^= bit;
-        if (i < j) std::swap(fft[i], fft[j]);
+        if (i < j) std::swap(spectrum_fft_[i], spectrum_fft_[j]);
       }
 
       for (std::size_t len = 2; len <= n; len <<= 1) {
@@ -880,10 +889,10 @@ private:
         for (std::size_t i = 0; i < n; i += len) {
           std::complex<double> w(1.0, 0.0);
           for (std::size_t j = 0; j < len / 2; ++j) {
-            auto u = fft[i + j];
-            auto v = fft[i + j + len / 2] * w;
-            fft[i + j] = u + v;
-            fft[i + j + len / 2] = u - v;
+            auto u = spectrum_fft_[i + j];
+            auto v = spectrum_fft_[i + j + len / 2] * w;
+            spectrum_fft_[i + j] = u + v;
+            spectrum_fft_[i + j + len / 2] = u - v;
             w *= wlen;
           }
         }
@@ -902,8 +911,12 @@ private:
         double pos = freq / source_bin_hz;
         std::size_t idx = static_cast<std::size_t>(pos);
         double frac = pos - static_cast<double>(idx);
-        float v0 = idx < source_bins ? static_cast<float>(std::norm(fft[idx]) * scale) : 0.0f;
-        float v1 = (idx + 1 < source_bins) ? static_cast<float>(std::norm(fft[idx + 1]) * scale) : v0;
+        float v0 = idx < source_bins
+                       ? static_cast<float>(std::norm(spectrum_fft_[idx]) * scale)
+                       : 0.0f;
+        float v1 = (idx + 1 < source_bins)
+                       ? static_cast<float>(std::norm(spectrum_fft_[idx + 1]) * scale)
+                       : v0;
         spec.bins[i] = v0 + static_cast<float>(frac) * (v1 - v0);
       }
 
@@ -911,7 +924,7 @@ private:
       spec.bin_hz = static_cast<float>(target_bin_hz);
       spec.power_db = power_sum > 0.0 ? static_cast<float>(10.0 * std::log10(power_sum / n)) : 0.0f;
       spec.peak_db = peak > 0.0 ? static_cast<float>(20.0 * std::log10(peak)) : 0.0f;
-      return spec;
+      return true;
     }
 
     EngineConfig config_;
@@ -933,12 +946,38 @@ private:
     bool tx_output_logged_ = false;
     std::atomic<bool> tx_active_{false};
     bool tx_output_started_{false};
+    static constexpr auto kSpectrumInterval = std::chrono::milliseconds(100);
+    std::chrono::steady_clock::time_point last_spectrum_time_{};
+    std::size_t spectrum_n_{0};
+    std::vector<double> spectrum_window_;
+    std::vector<double> spectrum_samples_;
+    std::vector<std::complex<double>> spectrum_fft_;
+    events::Variant spectrum_event_{events::Spectrum{}};
+    std::mutex event_mutex_;
 
     std::thread decode_thread_;
     std::mutex decode_mutex_;
     std::condition_variable decode_cv_;
-    std::optional<DecodeState> pending_decode_;
+    std::deque<DecodeState> decode_queue_;
     bool decode_stop_{false};
+
+    std::thread spectrum_thread_;
+    std::mutex spectrum_mutex_;
+    std::condition_variable spectrum_cv_;
+    struct SpectrumTask {
+      std::vector<std::int16_t> samples;
+      std::size_t frames = 0;
+      int channels = 1;
+      int sample_rate = 0;
+    };
+    std::deque<SpectrumTask> spectrum_queue_;
+    bool spectrum_stop_{false};
+
+    void emit_event(events::Variant const& ev) {
+      if (!callbacks_.on_event) return;
+      std::lock_guard<std::mutex> lock(event_mutex_);
+      callbacks_.on_event(ev);
+    }
 
     void start_decode_worker() {
       decode_thread_ = std::thread([this]() { decode_worker_loop(); });
@@ -948,49 +987,107 @@ private:
       {
         std::lock_guard<std::mutex> lock(decode_mutex_);
         decode_stop_ = true;
+        decode_queue_.clear();
       }
       decode_cv_.notify_one();
       if (decode_thread_.joinable()) decode_thread_.join();
     }
 
+    void start_spectrum_worker() {
+      spectrum_thread_ = std::thread([this]() { spectrum_worker_loop(); });
+    }
+
+    void stop_spectrum_worker() {
+      {
+        std::lock_guard<std::mutex> lock(spectrum_mutex_);
+        spectrum_stop_ = true;
+        spectrum_queue_.clear();
+      }
+      spectrum_cv_.notify_one();
+      if (spectrum_thread_.joinable()) spectrum_thread_.join();
+    }
+
     void enqueue_decode(DecodeState snapshot) {
       {
         std::lock_guard<std::mutex> lock(decode_mutex_);
-        pending_decode_ = std::move(snapshot);
+        decode_queue_.push_back(std::move(snapshot));
       }
       decode_cv_.notify_one();
     }
 
+    void enqueue_spectrum(const std::int16_t* data,
+                          std::size_t frames,
+                          int channels,
+                          int sample_rate) {
+      if (!data || frames == 0 || sample_rate <= 0) return;
+      std::size_t const max_frames = std::min<std::size_t>(frames, 4096);
+      SpectrumTask task;
+      task.frames = max_frames;
+      task.channels = 1;
+      task.sample_rate = sample_rate;
+      task.samples.resize(max_frames);
+      for (std::size_t i = 0; i < max_frames; ++i) {
+        task.samples[i] = data[i * channels];
+      }
+      {
+        std::lock_guard<std::mutex> lock(spectrum_mutex_);
+        spectrum_queue_.push_back(std::move(task));
+      }
+      spectrum_cv_.notify_one();
+    }
+
     void decode_worker_loop() {
       for (;;) {
-        std::optional<DecodeState> task;
+        DecodeState task;
         {
           std::unique_lock<std::mutex> lock(decode_mutex_);
-          decode_cv_.wait(lock, [&]() { return decode_stop_ || pending_decode_.has_value(); });
+          decode_cv_.wait(lock, [&]() { return decode_stop_ || !decode_queue_.empty(); });
           if (decode_stop_) return;
-          task = std::move(pending_decode_);
-          pending_decode_.reset();
+          task = std::move(decode_queue_.front());
+          decode_queue_.pop_front();
         }
-
-        if (!task) continue;
 
         if (callbacks_.on_log) {
           char log_msg[512];
           snprintf(log_msg, sizeof(log_msg),
                    "Calling legacy_decode: nsubmodes=0x%x, freq_range=%d-%d Hz, nfqso=%d Hz, sample_rate=%d, buffer_size=%zu, callback=%s",
-                   task->params.nsubmodes, task->params.nfa, task->params.nfb, task->params.nfqso,
-                   config_.sample_rate_hz, task->samples.size(),
+                   task.params.nsubmodes, task.params.nfa, task.params.nfb, task.params.nfqso,
+                   config_.sample_rate_hz, task.samples.size(),
                    callbacks_.on_event ? "SET" : "NULL");
           callbacks_.on_log(LogLevel::Info, log_msg);
         }
 
-        std::size_t decode_count = legacy_decode(*task, callbacks_.on_event);
+        std::size_t decode_count = legacy_decode(task, [this](events::Variant const& ev) {
+          emit_event(ev);
+        });
 
         if (callbacks_.on_log) {
           char log_msg[256];
           snprintf(log_msg, sizeof(log_msg),
                    "legacy_decode returned: %zu decodes", decode_count);
           callbacks_.on_log(LogLevel::Info, log_msg);
+        }
+      }
+    }
+
+    void spectrum_worker_loop() {
+      for (;;) {
+        SpectrumTask task;
+        {
+          std::unique_lock<std::mutex> lock(spectrum_mutex_);
+          spectrum_cv_.wait(lock, [&]() { return spectrum_stop_ || !spectrum_queue_.empty(); });
+          if (spectrum_stop_) return;
+          task = std::move(spectrum_queue_.front());
+          spectrum_queue_.pop_front();
+        }
+
+        auto& spec = std::get<events::Spectrum>(spectrum_event_);
+        if (compute_spectrum(task.samples.data(),
+                             task.frames,
+                             task.channels,
+                             task.sample_rate,
+                             spec)) {
+          emit_event(spectrum_event_);
         }
       }
     }
