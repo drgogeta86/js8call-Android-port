@@ -35,16 +35,6 @@
         app:title="@string/settings_category_audio"
         app:iconSpaceReserved="false">
 
-        <ListPreference
-            app:key="sample_rate"
-            app:title="@string/settings_sample_rate"
-            app:summary="@string/settings_sample_rate_summary"
-            app:entries="@array/sample_rate_entries"
-            app:entryValues="@array/sample_rate_values"
-            app:defaultValue="12000"
-            app:useSimpleSummaryProvider="true"
-            app:iconSpaceReserved="false" />
-
     </PreferenceCategory>
 
     <!-- Radio Category -->
