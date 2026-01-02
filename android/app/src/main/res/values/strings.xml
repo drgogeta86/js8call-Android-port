@@ -74,6 +74,8 @@
     <string name="settings_grid_summary">Your Maidenhead locator</string>
     <string name="settings_info">Info Message</string>
     <string name="settings_info_summary">Reply text for INFO?</string>
+    <string name="settings_status">Status Message</string>
+    <string name="settings_status_summary">Reply text for STATUS?</string>
 
     <string name="settings_audio_source">Audio Source</string>
     <string name="settings_audio_source_summary">Microphone or line input</string>

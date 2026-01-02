@@ -813,6 +813,12 @@ class JS8EngineService : Service() {
                 Log.i(TAG, "Auto INFO reply: from=${directed.from}")
                 sendAutoReply("INFO $info", directed.from, submode)
             }
+            "STATUS?" -> {
+                val status = prefs.getString(PREF_MY_STATUS, "")?.trim().orEmpty()
+                if (status.isBlank()) return
+                Log.i(TAG, "Auto STATUS reply: from=${directed.from}")
+                sendAutoReply("STATUS $status", directed.from, submode)
+            }
             "GRID?" -> {
                 val grid = prefs.getString("grid", "")?.trim().orEmpty().uppercase()
                 if (grid.isBlank()) return
@@ -1011,6 +1017,7 @@ class JS8EngineService : Service() {
         private const val TAG = "JS8EngineService"
         private const val PREF_AUTOREPLY_ENABLED = "autoreply_enabled"
         private const val PREF_MY_INFO = "my_info"
+        private const val PREF_MY_STATUS = "my_status"
 
         // Actions
         const val ACTION_START = "com.js8call.example.ACTION_START"

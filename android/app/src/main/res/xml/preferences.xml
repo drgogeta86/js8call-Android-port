@@ -28,6 +28,13 @@
             app:useSimpleSummaryProvider="true"
             app:iconSpaceReserved="false" />
 
+        <EditTextPreference
+            app:key="my_status"
+            app:title="@string/settings_status"
+            app:summary="@string/settings_status_summary"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
     </PreferenceCategory>
 
     <!-- Audio Category -->
