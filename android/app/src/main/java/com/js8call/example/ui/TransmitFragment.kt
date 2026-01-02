@@ -79,7 +79,7 @@ class TransmitFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
 
         // Initialize ViewModel
-        viewModel = ViewModelProvider(this)[TransmitViewModel::class.java]
+        viewModel = ViewModelProvider(requireActivity())[TransmitViewModel::class.java]
 
         // Find views
         messageEditText = view.findViewById(R.id.message_edit_text)
@@ -243,6 +243,13 @@ class TransmitFragment : Fragment() {
         viewModel.composedMessage.observe(viewLifecycleOwner) { text ->
             if (text.isEmpty() && messageEditText.text?.toString()?.isNotEmpty() == true) {
                 messageEditText.text?.clear()
+            }
+        }
+
+        viewModel.directedTo.observe(viewLifecycleOwner) { callsign ->
+            val current = directedEditText.text?.toString().orEmpty()
+            if (callsign.isNotBlank() && callsign != current) {
+                directedEditText.setText(callsign)
             }
         }
 

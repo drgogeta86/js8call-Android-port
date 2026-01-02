@@ -10,6 +10,7 @@ import android.view.ViewGroup
 import android.widget.TextView
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
+import androidx.navigation.fragment.findNavController
 import androidx.recyclerview.widget.RecyclerView
 import com.google.android.material.dialog.MaterialAlertDialogBuilder
 import com.google.android.material.floatingactionbutton.FloatingActionButton
@@ -22,6 +23,7 @@ import com.js8call.example.R
 class DecodeFragment : Fragment() {
 
     private lateinit var viewModel: DecodeViewModel
+    private lateinit var transmitViewModel: TransmitViewModel
     private lateinit var adapter: DecodeListAdapter
 
     private lateinit var recyclerView: RecyclerView
@@ -41,6 +43,7 @@ class DecodeFragment : Fragment() {
 
         // Initialize ViewModel (shared with MonitorFragment)
         viewModel = ViewModelProvider(requireActivity())[DecodeViewModel::class.java]
+        transmitViewModel = ViewModelProvider(requireActivity())[TransmitViewModel::class.java]
 
         // Find views
         recyclerView = view.findViewById(R.id.decodes_recycler_view)
@@ -108,13 +111,33 @@ class DecodeFragment : Fragment() {
     }
 
     private fun replyToMessage(decode: com.js8call.example.model.DecodedMessage) {
-        // TODO: Extract callsign from message and switch to TX tab
-        // For now, just show a message
-        Snackbar.make(
-            requireView(),
-            "Reply to: ${decode.text}",
-            Snackbar.LENGTH_SHORT
-        ).show()
+        val callsign = extractCallsign(decode.text)
+        if (callsign.isNullOrBlank()) {
+            Snackbar.make(requireView(), "No callsign found", Snackbar.LENGTH_SHORT).show()
+            return
+        }
+        transmitViewModel.setDirectedTo(callsign)
+        findNavController().navigate(R.id.navigation_transmit)
+    }
+
+    private fun extractCallsign(text: String): String? {
+        val trimmed = text.trim()
+        if (trimmed.isBlank()) return null
+
+        val firstToken = trimmed.split(Regex("\\s+"), limit = 2)[0]
+        val callsign = firstToken.trimEnd(':').uppercase()
+        return if (isCallsignPrefix(callsign)) callsign else null
+    }
+
+    private fun isCallsignPrefix(token: String): Boolean {
+        if (token.isBlank()) return false
+        if (token.startsWith("@")) return false
+        if (token in setOf("CQ", "HB", "HEARTBEAT", "ALLCALL", "@ALLCALL")) return false
+        val callsignRegex = Regex("^[A-Z0-9/]{3,12}$")
+        if (!callsignRegex.matches(token)) return false
+        if (!token.any { it.isLetter() }) return false
+        if (!token.any { it.isDigit() }) return false
+        return true
     }
 
     private fun confirmClearDecodes() {
