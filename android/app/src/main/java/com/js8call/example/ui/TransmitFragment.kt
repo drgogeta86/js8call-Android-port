@@ -48,6 +48,7 @@ class TransmitFragment : Fragment() {
     private var selectedSubmode: Int = SUBMODE_NORMAL
     private var defaultSendButtonTint: ColorStateList? = null
     private var modeOptions: List<ModeOption> = emptyList()
+    private lateinit var queueAdapter: TransmitQueueAdapter
 
     private val preferenceListener =
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -91,6 +92,9 @@ class TransmitFragment : Fragment() {
         modeSelect = view.findViewById(R.id.tx_mode_select)
         speedSelect = view.findViewById(R.id.tx_speed_select)
         defaultSendButtonTint = sendButton.backgroundTintList
+
+        queueAdapter = TransmitQueueAdapter()
+        queueRecyclerView.adapter = queueAdapter
 
         // Set up listeners
         setupListeners()
@@ -266,13 +270,13 @@ class TransmitFragment : Fragment() {
 
         // Observe queue
         viewModel.queue.observe(viewLifecycleOwner) { queue ->
+            queueAdapter.submitList(queue)
             if (queue.isEmpty()) {
                 queueRecyclerView.visibility = View.GONE
                 queueEmptyText.visibility = View.VISIBLE
             } else {
                 queueRecyclerView.visibility = View.VISIBLE
                 queueEmptyText.visibility = View.GONE
-                // TODO: Update adapter with queue
             }
         }
     }
