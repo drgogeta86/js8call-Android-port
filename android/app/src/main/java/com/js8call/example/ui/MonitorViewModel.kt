@@ -99,4 +99,10 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         )
         _isRunning.value = false
     }
+
+    fun clearError() {
+        val current = _status.value ?: return
+        if (current.errorMessage == null) return
+        _status.value = current.copy(errorMessage = null)
+    }
 }

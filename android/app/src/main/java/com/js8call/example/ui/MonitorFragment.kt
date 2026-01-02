@@ -193,6 +193,7 @@ class MonitorFragment : Fragment() {
             // Show error if present
             status.errorMessage?.let { error ->
                 Snackbar.make(requireView(), error, Snackbar.LENGTH_LONG).show()
+                viewModel.clearError()
             }
         }
 
