@@ -57,12 +57,28 @@ data class DecodedMessage(
     }
 
     /**
-     * Format time as HH:MM from UTC.
+     * Format time as local HH:MM:SS derived from UTC HHMMSS.
      */
     fun formattedTime(): String {
-        val hours = utc / 100
-        val minutes = utc % 100
-        return String.format("%02d:%02d", hours, minutes)
+        val hours = utc / 10000
+        val minutes = (utc / 100) % 100
+        val seconds = utc % 100
+
+        val utcCal = java.util.Calendar.getInstance(java.util.TimeZone.getTimeZone("UTC")).apply {
+            set(java.util.Calendar.HOUR_OF_DAY, hours)
+            set(java.util.Calendar.MINUTE, minutes)
+            set(java.util.Calendar.SECOND, seconds)
+            set(java.util.Calendar.MILLISECOND, 0)
+        }
+        val localCal = java.util.Calendar.getInstance().apply {
+            timeInMillis = utcCal.timeInMillis
+        }
+        return String.format(
+            "%02d:%02d:%02d",
+            localCal.get(java.util.Calendar.HOUR_OF_DAY),
+            localCal.get(java.util.Calendar.MINUTE),
+            localCal.get(java.util.Calendar.SECOND)
+        )
     }
 }
 
