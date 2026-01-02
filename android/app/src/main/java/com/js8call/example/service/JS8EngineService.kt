@@ -44,6 +44,8 @@ class JS8EngineService : Service() {
     private var callsignWarningShown = false
     private var lastTxMessage: String = ""
     private val heartbeatRegex = Regex("^\\s*([^:]+):\\s+@HB\\s+HEARTBEAT\\b", RegexOption.IGNORE_CASE)
+    private val heardCallsigns = mutableMapOf<String, Long>()
+    private val heardLock = Any()
     private val txMonitorRunnable = object : Runnable {
         override fun run() {
             val activeEngine = engine
@@ -218,6 +220,7 @@ class JS8EngineService : Service() {
 
                     // Broadcast on main thread
                     mainHandler.post {
+                        updateHeardCallsign(text)
                         broadcastDecode(utc, snr, dt, freq, text, type, quality, mode)
                         maybeHandleAutoReply(text, snr, mode)
                     }
@@ -819,6 +822,15 @@ class JS8EngineService : Service() {
                 Log.i(TAG, "Auto STATUS reply: from=${directed.from}")
                 sendAutoReply("STATUS $status", directed.from, submode)
             }
+            "HEARING?" -> {
+                val heard = getRecentHeardCallsigns(
+                    exclude = setOf(directed.from.trim().uppercase(), callsign),
+                    limit = HEARD_LIMIT
+                )
+                if (heard.isEmpty()) return
+                Log.i(TAG, "Auto HEARING reply: from=${directed.from}, count=${heard.size}")
+                sendAutoReply("HEARING ${heard.joinToString(" ")}", directed.from, submode)
+            }
             "GRID?" -> {
                 val grid = prefs.getString("grid", "")?.trim().orEmpty().uppercase()
                 if (grid.isBlank()) return
@@ -947,6 +959,55 @@ class JS8EngineService : Service() {
         }
     }
 
+    private fun updateHeardCallsign(text: String) {
+        val callsign = extractHeardCallsign(text) ?: return
+        val now = System.currentTimeMillis()
+        synchronized(heardLock) {
+            heardCallsigns[callsign] = now
+            pruneHeardEntries(now)
+        }
+    }
+
+    private fun getRecentHeardCallsigns(exclude: Set<String>, limit: Int): List<String> {
+        val now = System.currentTimeMillis()
+        synchronized(heardLock) {
+            pruneHeardEntries(now)
+            return heardCallsigns.entries
+                .asSequence()
+                .filter { !exclude.contains(it.key) }
+                .sortedByDescending { it.value }
+                .take(limit)
+                .map { it.key }
+                .toList()
+        }
+    }
+
+    private fun pruneHeardEntries(now: Long) {
+        val iter = heardCallsigns.iterator()
+        while (iter.hasNext()) {
+            val entry = iter.next()
+            if (now - entry.value > HEARD_WINDOW_MS) {
+                iter.remove()
+            }
+        }
+    }
+
+    private fun extractHeardCallsign(text: String): String? {
+        val trimmed = text.trim()
+        if (trimmed.isBlank()) return null
+        val firstToken = trimmed.split(Regex("\\s+"), limit = 2)[0]
+        var token = firstToken.trimEnd(':').uppercase()
+        if (token.contains(">")) {
+            token = token.substringBefore(">").trimEnd(':')
+        }
+        if (token.startsWith("@")) return null
+        if (token in HEARD_EXCLUDE_TOKENS) return null
+        val callsignRegex = Regex("^[A-Z0-9/]{3,12}$")
+        if (!callsignRegex.matches(token)) return null
+        if (!token.any { it.isLetter() } || !token.any { it.isDigit() }) return null
+        return token
+    }
+
     private fun updateLastTxMessage(text: String, directedCall: String) {
         val built = buildTxMessage(text, directedCall)
         if (built.isNotBlank()) {
@@ -1018,6 +1079,9 @@ class JS8EngineService : Service() {
         private const val PREF_AUTOREPLY_ENABLED = "autoreply_enabled"
         private const val PREF_MY_INFO = "my_info"
         private const val PREF_MY_STATUS = "my_status"
+        private const val HEARD_LIMIT = 4
+        private const val HEARD_WINDOW_MS = 15 * 60 * 1000L
+        private val HEARD_EXCLUDE_TOKENS = setOf("CQ", "HB", "HEARTBEAT", "ALLCALL", "@ALLCALL")
 
         // Actions
         const val ACTION_START = "com.js8call.example.ACTION_START"
