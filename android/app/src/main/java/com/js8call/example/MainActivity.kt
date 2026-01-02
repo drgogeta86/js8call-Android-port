@@ -7,6 +7,7 @@ import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.os.Bundle
+import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
 import androidx.core.content.ContextCompat
@@ -14,6 +15,7 @@ import androidx.lifecycle.ViewModelProvider
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.navigation.fragment.NavHostFragment
 import androidx.navigation.ui.setupWithNavController
+import androidx.preference.PreferenceManager
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.snackbar.Snackbar
 import com.js8call.example.service.JS8EngineService
@@ -45,6 +47,13 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val REQUEST_RECORD_AUDIO = 1
         private const val REQUEST_LOCATION = 2
+        private const val PREF_KEEP_SCREEN_ON = "keep_screen_on"
+    }
+
+    private val prefsListener = android.content.SharedPreferences.OnSharedPreferenceChangeListener { prefs, key ->
+        if (key == PREF_KEEP_SCREEN_ON) {
+            applyKeepScreenOn(prefs.getBoolean(PREF_KEEP_SCREEN_ON, false))
+        }
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -63,10 +72,16 @@ class MainActivity : AppCompatActivity() {
 
         // Check permissions
         checkPermissions()
+
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        applyKeepScreenOn(prefs.getBoolean(PREF_KEEP_SCREEN_ON, false))
     }
 
     override fun onStart() {
         super.onStart()
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        prefs.registerOnSharedPreferenceChangeListener(prefsListener)
+        applyKeepScreenOn(prefs.getBoolean(PREF_KEEP_SCREEN_ON, false))
         val filter = IntentFilter().apply {
             addAction(JS8EngineService.ACTION_DECODE)
         }
@@ -75,6 +90,8 @@ class MainActivity : AppCompatActivity() {
     }
 
     override fun onStop() {
+        PreferenceManager.getDefaultSharedPreferences(this)
+            .unregisterOnSharedPreferenceChangeListener(prefsListener)
         LocalBroadcastManager.getInstance(this)
             .unregisterReceiver(decodeReceiver)
         super.onStop()
@@ -140,6 +157,14 @@ class MainActivity : AppCompatActivity() {
                     ).show()
                 }
             }
+        }
+    }
+
+    private fun applyKeepScreenOn(enabled: Boolean) {
+        if (enabled) {
+            window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
+        } else {
+            window.clearFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
         }
     }
 }
