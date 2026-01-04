@@ -29,6 +29,7 @@ on:
 env:
   BOOST_VERSION: 1.83.0
   BOOST_VERSION_UNDERSCORE: 1_83_0
+  HAMLIB_VERSION: master
 
 jobs:
   build:
@@ -57,6 +58,27 @@ jobs:
     - name: Install NDK
       run: |
         sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
+
+    - name: Install Hamlib build dependencies
+      run: |
+        sudo apt-get update
+        sudo apt-get install -y autoconf automake libtool pkg-config
+
+    - name: Cache Hamlib build
+      id: cache-hamlib
+      uses: actions/cache@v4
+      with:
+        path: |
+          android/hamlib/hamlib-src
+          android/libs/hamlib
+        key: ${{ runner.os }}-hamlib-${{ env.HAMLIB_VERSION }}-ndk26-${{ hashFiles('android/hamlib/patches/*.patch', 'android/hamlib/build-hamlib-android.sh') }}
+
+    - name: Build Hamlib
+      if: steps.cache-hamlib.outputs.cache-hit != 'true'
+      run: |
+        export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/26.1.10909125
+        export HAMLIB_VERSION=${HAMLIB_VERSION}
+        ./android/hamlib/build-hamlib-android.sh
 
     - name: Cache Boost headers
       id: cache-boost
