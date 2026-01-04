@@ -168,19 +168,25 @@
         app:title="@string/settings_category_network"
         app:iconSpaceReserved="false">
 
+        <!-- TODO: Enable when PSKReporter support is implemented. -->
+        <!--
         <SwitchPreferenceCompat
             app:key="psk_reporter"
             app:title="@string/settings_psk_reporter"
             app:summary="@string/settings_psk_reporter_summary"
             app:defaultValue="false"
             app:iconSpaceReserved="false" />
+        -->
 
+        <!-- TODO: Enable when APRS-IS support is implemented. -->
+        <!--
         <SwitchPreferenceCompat
             app:key="aprs_is"
             app:title="@string/settings_aprs_is"
             app:summary="@string/settings_aprs_is_summary"
             app:defaultValue="false"
             app:iconSpaceReserved="false" />
+        -->
 
     </PreferenceCategory>
 
