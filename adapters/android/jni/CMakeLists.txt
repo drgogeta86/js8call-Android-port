@@ -9,8 +9,10 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Create the JNI library
 add_library(js8core-jni SHARED
+  hamlib_rig_control_jni.cpp
   js8_engine_jni.cpp
   js8_jni_methods.cpp
+  usb_serial_bridge_jni.cpp
 )
 
 target_compile_features(js8core-jni PUBLIC cxx_std_20)
@@ -32,6 +34,15 @@ target_link_libraries(js8core-jni
 if(ANDROID)
   # JNI headers are provided by NDK automatically
   # No need to find_package(JNI) for Android builds
+
+  # Hamlib static library for rig model enumeration
+  set(HAMLIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../android/libs/hamlib/${ANDROID_ABI}")
+  if(EXISTS "${HAMLIB_ROOT}/lib/libhamlib.a")
+    target_include_directories(js8core-jni PRIVATE "${HAMLIB_ROOT}/include")
+    target_link_libraries(js8core-jni PRIVATE "${HAMLIB_ROOT}/lib/libhamlib.a" m)
+  else()
+    message(FATAL_ERROR "Hamlib not found at ${HAMLIB_ROOT}. Build hamlib for ${ANDROID_ABI}.")
+  endif()
 
   # Strip symbols in release builds
   if(CMAKE_BUILD_TYPE STREQUAL "Release")

@@ -494,7 +494,7 @@ class MonitorFragment : Fragment() {
                 val rigControlEnabled = prefs.getBoolean("rig_control_enabled", false)
                 val rigType = prefs.getString("rig_type", "none")
 
-                if (rigControlEnabled && (rigType == "network" || rigType == "usb")) {
+                if (rigControlEnabled && (rigType == "network" || rigType == "hamlib_usb")) {
                     // Send frequency change to service
                     val intent = Intent(requireContext(), JS8EngineService::class.java).apply {
                         action = JS8EngineService.ACTION_SET_FREQUENCY

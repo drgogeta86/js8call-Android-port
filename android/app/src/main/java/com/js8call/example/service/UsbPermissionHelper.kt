@@ -119,4 +119,17 @@ object UsbPermissionHelper {
         // Return the first device
         return deviceList.values.firstOrNull()
     }
+
+    /**
+     * Find a USB device by Android device ID.
+     * Returns null if not found.
+     */
+    fun findUsbDeviceById(context: Context, deviceId: Int): UsbDevice? {
+        val usbManager = context.getSystemService(Context.USB_SERVICE) as UsbManager
+        val device = usbManager.deviceList.values.firstOrNull { it.deviceId == deviceId }
+        if (device == null) {
+            Log.d(TAG, "No USB device found with deviceId=$deviceId")
+        }
+        return device
+    }
 }

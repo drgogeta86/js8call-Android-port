@@ -7,6 +7,9 @@ android/local.properties
 **/.cxx/
 android/**/build/
 android/fftw3-build/
+android/hamlib/hamlib-src/
+android/hamlib/hamlib-build/
+android/libs/hamlib/
 
 # CMake build artifacts
 CMakeCache.txt

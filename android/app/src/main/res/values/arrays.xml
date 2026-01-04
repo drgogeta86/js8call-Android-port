@@ -4,12 +4,12 @@
     <string-array name="rig_type_entries">
         <item>None</item>
         <item>Network (rigctld/FlRig)</item>
-        <item>USB Serial (ICOM)</item>
+        <item>USB (Hamlib)</item>
     </string-array>
     <string-array name="rig_type_values">
         <item>none</item>
         <item>network</item>
-        <item>usb</item>
+        <item>hamlib_usb</item>
     </string-array>
 
     <!-- Theme Options -->
@@ -48,25 +48,33 @@
         <item>50318000</item>
     </string-array>
 
-    <!-- Icom Radio Models -->
-    <string-array name="icom_model_entries">
-        <item>IC-7300</item>
-        <item>IC-7610</item>
-        <item>IC-9700</item>
-        <item>IC-705</item>
-        <item>IC-7851</item>
-        <item>IC-7100</item>
-        <item>IC-7410</item>
-        <item>IC-7600</item>
+    <!-- Serial parameter options (Hamlib USB) -->
+    <string-array name="serial_data_bits_entries">
+        <item>7</item>
+        <item>8</item>
     </string-array>
-    <string-array name="icom_model_addresses">
-        <item>94</item>  <!-- IC-7300 -->
-        <item>98</item>  <!-- IC-7610 -->
-        <item>A2</item>  <!-- IC-9700 -->
-        <item>A4</item>  <!-- IC-705 -->
-        <item>8E</item>  <!-- IC-7851 -->
-        <item>88</item>  <!-- IC-7100 -->
-        <item>80</item>  <!-- IC-7410 -->
-        <item>7A</item>  <!-- IC-7600 -->
+    <string-array name="serial_data_bits_values">
+        <item>7</item>
+        <item>8</item>
+    </string-array>
+
+    <string-array name="serial_stop_bits_entries">
+        <item>1</item>
+        <item>2</item>
+    </string-array>
+    <string-array name="serial_stop_bits_values">
+        <item>1</item>
+        <item>2</item>
+    </string-array>
+
+    <string-array name="serial_parity_entries">
+        <item>None</item>
+        <item>Odd</item>
+        <item>Even</item>
+    </string-array>
+    <string-array name="serial_parity_values">
+        <item>none</item>
+        <item>odd</item>
+        <item>even</item>
     </string-array>
 </resources>

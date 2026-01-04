@@ -1,6 +1,6 @@
 #CURRENTLY THE ANDROID PORT IS *WILDLY* BETA. The interface has many parts that are stubbed and do NOT function in any way. Currently RX and TX work, HOWEVER 
 lower end Android devices will likely have issues decoding as the decoder pipeline is heavy. It works great on my Pixel 9 Pro, but will not work at all on my 
-Amazon Fire tablet. Basic network rig control via rigctld works, as does serial in ICOM format. Other radios will be supported in the future. The design of the 
+Amazon Fire tablet. Basic network rig control via rigctld works, plus USB rig control via Hamlib. The design of the 
 GUI *WILL* change. Not responsible for this code doing unexpected things, draining all of your batteries, or kidnapping your pets. User beware.
 
 # JS8Call-improved

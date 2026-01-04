@@ -16,10 +16,14 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.preference.PreferenceManager
+import com.js8call.core.HamlibRigControl
 import com.js8call.core.JS8AudioHelper
 import com.js8call.core.JS8Engine
+import com.js8call.core.UsbSerialBridge
+import com.js8call.core.UsbSerialPortCatalog
 import com.js8call.example.MainActivity
 import com.js8call.example.R
+import java.util.Locale
 
 /**
  * Foreground service for running the JS8 engine in the background.
@@ -32,9 +36,12 @@ class JS8EngineService : Service() {
     private var engine: JS8Engine? = null
     private var audioHelper: JS8AudioHelper? = null
     private var rigCtlClient: RigCtlClient? = null
-    private var icomClient: IcomCIVClient? = null
     private var rigCtlConnected: Boolean = false
     private var rigCtlErrorShown: Boolean = false
+    private var rigControlMode: String = "none"
+    private var hamlibRigControl: HamlibRigControl? = null
+    private var hamlibRigConnected: Boolean = false
+    private var usbSerialBridge: UsbSerialBridge? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val txMonitorHandler = Handler(Looper.getMainLooper())
     private var selectedAudioDeviceId: Int = -1  // -1 means use default
@@ -59,13 +66,9 @@ class JS8EngineService : Service() {
                 txMonitorActive = false
                 txMonitorWasAudioActive = false
                 // Release PTT when TX finishes
-                if (rigCtlConnected) {
+                if (isRigControlConnected()) {
                     Thread {
-                        val pttOff = when {
-                            rigCtlClient != null -> rigCtlClient!!.setPtt(false)
-                            icomClient != null -> icomClient!!.setPtt(false)
-                            else -> false
-                        }
+                        val pttOff = setRigPtt(false)
                         Log.i(TAG, "TX finished, PTT released: $pttOff")
                     }.start()
                 }
@@ -75,13 +78,9 @@ class JS8EngineService : Service() {
             if (audioActive && !txMonitorWasAudioActive) {
                 txMonitorWasAudioActive = true
                 // Enable PTT when audio TX starts
-                if (rigCtlConnected) {
+                if (isRigControlConnected()) {
                     Thread {
-                        val pttOn = when {
-                            rigCtlClient != null -> rigCtlClient!!.setPtt(true)
-                            icomClient != null -> icomClient!!.setPtt(true)
-                            else -> false
-                        }
+                        val pttOn = setRigPtt(true)
                         Log.i(TAG, "TX audio started, PTT enabled: $pttOn")
                     }.start()
                 }
@@ -89,13 +88,9 @@ class JS8EngineService : Service() {
             } else if (!audioActive && txMonitorWasAudioActive) {
                 txMonitorWasAudioActive = false
                 // Release PTT when audio stops (between packets)
-                if (rigCtlConnected) {
+                if (isRigControlConnected()) {
                     Thread {
-                        val pttOff = when {
-                            rigCtlClient != null -> rigCtlClient!!.setPtt(false)
-                            icomClient != null -> icomClient!!.setPtt(false)
-                            else -> false
-                        }
+                        val pttOff = setRigPtt(false)
                         Log.i(TAG, "TX audio paused, PTT released: $pttOff")
                     }.start()
                 }
@@ -108,6 +103,8 @@ class JS8EngineService : Service() {
     override fun onCreate() {
         super.onCreate()
         createNotificationChannel()
+        usbSerialBridge = UsbSerialBridge(applicationContext)
+        hamlibRigControl = HamlibRigControl()
         Log.i(TAG, "Service created")
     }
 
@@ -321,12 +318,14 @@ class JS8EngineService : Service() {
 
         if (!rigControlEnabled || rigType == "none") {
             Log.i(TAG, "Rig control not enabled")
+            rigControlMode = "none"
             return
         }
 
+        rigControlMode = rigType ?: "none"
         when (rigType) {
             "network" -> initializeNetworkRigControl()
-            "usb" -> initializeUsbRigControl()
+            "hamlib_usb" -> initializeHamlibUsbControl()
             else -> Log.w(TAG, "Unknown rig type: $rigType")
         }
     }
@@ -365,74 +364,144 @@ class JS8EngineService : Service() {
         }.start()
     }
 
-    private fun initializeUsbRigControl() {
-        Log.i(TAG, "Initializing USB rig control (Icom CI-V)")
+    private fun initializeHamlibUsbControl() {
+        Log.i(TAG, "Initializing USB rig control (Hamlib)")
+        hamlibRigConnected = false
 
-        // Find USB device
-        val usbDevice = UsbPermissionHelper.findFirstUsbDevice(this)
-        if (usbDevice == null) {
-            Log.w(TAG, "No USB device found")
-            broadcastError("No USB device found. Please connect your radio.")
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val rigModelStr = prefs.getString("rig_hamlib_model", "0")?.trim().orEmpty()
+        val selectedPort = prefs.getString("rig_hamlib_usb_port", "auto")?.trim().orEmpty()
+        var deviceIdStr = prefs.getString("rig_usb_device_id", "")?.trim().orEmpty()
+        var portIndexStr = prefs.getString("rig_usb_port_index", "0")?.trim().orEmpty()
+
+        if (selectedPort.isNotEmpty() && selectedPort != "auto") {
+            val parts = selectedPort.split(':', limit = 2)
+            if (parts.size == 2) {
+                deviceIdStr = parts[0]
+                portIndexStr = parts[1]
+            }
+        }
+
+        val rigModel = rigModelStr.toIntOrNull() ?: 0
+        Log.i(TAG, "Hamlib rig model selected: $rigModel")
+        if (rigModel <= 0) {
+            Log.w(TAG, "Hamlib rig model not selected")
+            broadcastError("Select a Hamlib rig model before enabling USB control.")
             rigCtlErrorShown = true
             return
         }
 
-        Log.i(TAG, "Found USB device: ${usbDevice.deviceName}")
+        usbSerialBridge?.registerNative()
 
-        // Check/request USB permission
+        var deviceId = deviceIdStr.toIntOrNull()
+        var portIndex = portIndexStr.toIntOrNull() ?: 0
+        if (deviceId == null) {
+            val ports = try {
+                UsbSerialPortCatalog.listPorts(this)
+            } catch (_: Throwable) {
+                emptyList()
+            }
+            val firstPort = ports.firstOrNull()
+            if (firstPort != null) {
+                deviceId = firstPort.deviceId
+                portIndex = firstPort.portIndex
+                Log.i(TAG, "Auto-selected USB serial port: ${firstPort.label}")
+            }
+        }
+
+        val usbDevice = if (deviceId != null) {
+            UsbPermissionHelper.findUsbDeviceById(this, deviceId)
+        } else {
+            null
+        }
+
+        if (usbDevice == null) {
+            Log.w(TAG, "No USB serial device found for Hamlib")
+            broadcastError("No USB serial device found for Hamlib control.")
+            rigCtlErrorShown = true
+            return
+        }
+
+        Log.i(TAG, "Hamlib USB device selected: ${usbDevice.deviceName} (id=${usbDevice.deviceId}) port=$portIndex")
+
         if (!UsbPermissionHelper.hasPermission(this, usbDevice)) {
-            Log.i(TAG, "Requesting USB permission...")
+            Log.i(TAG, "Requesting USB permission for Hamlib device...")
             UsbPermissionHelper.requestPermission(this, usbDevice) { granted ->
                 if (granted) {
-                    connectToUsbDevice(usbDevice)
+                    Log.i(TAG, "USB permission granted for Hamlib device")
+                    openHamlibRig(rigModel, usbDevice.deviceId, portIndex)
                 } else {
-                    Log.w(TAG, "USB permission denied")
+                    Log.w(TAG, "USB permission denied for Hamlib device")
                     broadcastError("USB permission denied. Please grant USB access in Settings.")
                     rigCtlErrorShown = true
                 }
             }
         } else {
-            connectToUsbDevice(usbDevice)
+            Log.i(TAG, "USB permission already granted for Hamlib device")
+            openHamlibRig(rigModel, usbDevice.deviceId, portIndex)
         }
     }
 
-    private fun connectToUsbDevice(usbDevice: android.hardware.usb.UsbDevice) {
+    private fun openHamlibRig(rigModel: Int, deviceId: Int, portIndex: Int) {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val radioAddressStr = prefs.getString("icom_radio_model", "94") ?: "94"
-        val radioAddress = radioAddressStr.toIntOrNull(16)?.toByte() ?: 0x94.toByte()
+        val baudRate = prefs.getString("rig_serial_baud", "9600")?.toIntOrNull() ?: 9600
+        val dataBits = prefs.getString("rig_serial_data_bits", "8")?.toIntOrNull() ?: 8
+        val stopBits = prefs.getString("rig_serial_stop_bits", "1")?.toIntOrNull() ?: 1
+        val parity = prefs.getString("rig_serial_parity", "none") ?: "none"
+        val parityValue = when (parity.lowercase(Locale.US)) {
+            "odd" -> 1
+            "even" -> 2
+            "mark" -> 3
+            "space" -> 4
+            else -> 0
+        }
 
-        Log.i(TAG, "Connecting to Icom radio at address 0x${radioAddressStr}")
-
-        // Connect on background thread
         Thread {
-            try {
-                icomClient = IcomCIVClient(this, usbDevice, radioAddress)
-                rigCtlConnected = icomClient?.connect() == true
-                rigCtlErrorShown = false
+            val preopenOk = usbSerialBridge?.open(
+                deviceId,
+                portIndex,
+                baudRate,
+                dataBits,
+                stopBits,
+                parityValue
+            ) == true
 
+            if (!preopenOk) {
                 mainHandler.post {
-                    if (rigCtlConnected) {
-                        Log.i(TAG, "Connected to Icom radio via USB")
-
-                        // Query current frequency from radio
-                        Thread {
-                            val currentFreq = icomClient?.getFrequency()
-                            if (currentFreq != null) {
-                                mainHandler.post {
-                                    broadcastRadioFrequency(currentFreq)
-                                }
-                            }
-                        }.start()
-                    } else {
-                        Log.w(TAG, "Failed to connect to Icom radio via USB")
-                        broadcastError("Failed to connect to Icom radio. Check USB connection.")
-                        rigCtlErrorShown = true
-                    }
+                    hamlibRigConnected = false
+                    rigCtlErrorShown = true
+                    Log.w(TAG, "Hamlib USB pre-open failed for device=$deviceId port=$portIndex")
+                    broadcastError("Failed to open USB serial port for Hamlib control.")
                 }
-            } catch (e: Exception) {
-                Log.e(TAG, "Error connecting to USB rig", e)
-                mainHandler.post {
-                    broadcastError("Error connecting to USB rig: ${e.message}")
+                return@Thread
+            }
+
+            val resolvedPortIndex = usbSerialBridge?.getActivePortIndex() ?: portIndex
+
+            val ok = hamlibRigControl?.open(
+                rigModel,
+                deviceId,
+                resolvedPortIndex,
+                baudRate,
+                dataBits,
+                stopBits,
+                parity
+            ) == true
+
+            mainHandler.post {
+                hamlibRigConnected = ok
+                rigCtlErrorShown = false
+                if (ok) {
+                    Log.i(TAG, "Hamlib rig opened (model=$rigModel device=$deviceId port=$resolvedPortIndex)")
+                } else {
+                    val detail = hamlibRigControl?.getLastError().orEmpty()
+                    if (detail.isNotBlank()) {
+                        Log.w(TAG, "Hamlib rig open failed: $detail")
+                        broadcastError("Failed to open Hamlib rig: $detail")
+                    } else {
+                        Log.w(TAG, "Hamlib rig open failed")
+                        broadcastError("Failed to open Hamlib rig. Check USB connection and settings.")
+                    }
                     rigCtlErrorShown = true
                 }
             }
@@ -448,16 +517,17 @@ class JS8EngineService : Service() {
 
             // Disconnect rig control on background thread
             val networkClientToDisconnect = rigCtlClient
-            val usbClientToDisconnect = icomClient
             rigCtlClient = null
-            icomClient = null
             rigCtlConnected = false
             rigCtlErrorShown = false
+            hamlibRigConnected = false
+            rigControlMode = "none"
+            hamlibRigControl?.close()
+            usbSerialBridge?.unregisterNative()
 
-            if (networkClientToDisconnect != null || usbClientToDisconnect != null) {
+            if (networkClientToDisconnect != null) {
                 Thread {
-                    networkClientToDisconnect?.disconnect()
-                    usbClientToDisconnect?.disconnect()
+                    networkClientToDisconnect.disconnect()
                 }.start()
             }
 
@@ -1046,17 +1116,33 @@ class JS8EngineService : Service() {
         return "$trimmed $grid4".trim()
     }
 
+    private fun isRigControlConnected(): Boolean {
+        return when (rigControlMode) {
+            "network" -> rigCtlConnected
+            "hamlib_usb" -> hamlibRigConnected
+            else -> false
+        }
+    }
+
+    private fun setRigPtt(enabled: Boolean): Boolean {
+        return when (rigControlMode) {
+            "network" -> rigCtlClient?.setPtt(enabled) == true
+            "hamlib_usb" -> hamlibRigControl?.setPtt(enabled) == true
+            else -> false
+        }
+    }
+
     private fun setFrequency(frequencyHz: Long) {
-        if (!rigCtlConnected) {
+        if (!isRigControlConnected()) {
             Log.d(TAG, "Cannot set frequency: rig control not connected")
             return
         }
 
         // Run on background thread
         Thread {
-            val success = when {
-                rigCtlClient != null -> rigCtlClient!!.setFrequency(frequencyHz)
-                icomClient != null -> icomClient!!.setFrequency(frequencyHz)
+            val success = when (rigControlMode) {
+                "network" -> rigCtlClient?.setFrequency(frequencyHz) == true
+                "hamlib_usb" -> hamlibRigControl?.setFrequency(frequencyHz) == true
                 else -> false
             }
 
@@ -1064,9 +1150,22 @@ class JS8EngineService : Service() {
                 if (success) {
                     Log.i(TAG, "Frequency set to $frequencyHz Hz")
                 } else {
-                    Log.w(TAG, "Failed to set frequency to $frequencyHz Hz")
+                    val detail = if (rigControlMode == "hamlib_usb") {
+                        hamlibRigControl?.getLastError().orEmpty()
+                    } else {
+                        ""
+                    }
+                    if (detail.isNotBlank()) {
+                        Log.w(TAG, "Failed to set frequency to $frequencyHz Hz: $detail")
+                    } else {
+                        Log.w(TAG, "Failed to set frequency to $frequencyHz Hz")
+                    }
                     if (!rigCtlErrorShown) {
-                        broadcastError("Rig control communication failed")
+                        if (detail.isNotBlank()) {
+                            broadcastError("Rig control failed: $detail")
+                        } else {
+                            broadcastError("Rig control communication failed")
+                        }
                         rigCtlErrorShown = true
                     }
                 }

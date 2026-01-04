@@ -121,6 +121,9 @@ dependencies {
     // AndroidX core
     implementation("androidx.core:core-ktx:1.12.0")
 
+    // USB serial bridge (Hamlib Android adapter)
+    implementation("com.github.mik3y:usb-serial-for-android:3.7.3")
+
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")

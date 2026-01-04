@@ -1,6 +1,11 @@
 #include <jni.h>
 #include <android/log.h>
+#include <algorithm>
+#include <mutex>
 #include <string>
+#include <strings.h>
+#include <vector>
+#include "hamlib/rig.h"
 #include "js8_engine_jni.h"
 
 // JNI method implementations for com.js8call.core.JS8Engine
@@ -13,6 +18,28 @@ std::string to_utf8(JNIEnv* env, jstring value) {
   std::string out(chars);
   env->ReleaseStringUTFChars(value, chars);
   return out;
+}
+
+struct RigModelEntry {
+  int model = 0;
+  std::string mfg;
+  std::string name;
+};
+
+std::once_flag g_hamlib_loaded;
+
+int collect_rig_caps(const struct rig_caps* caps, void* data) {
+  if (!caps || !data) return -1;
+  if (caps->rig_model == RIG_MODEL_NONE) return -1;
+  if (!caps->mfg_name || !caps->model_name) return -1;
+
+  auto* list = static_cast<std::vector<RigModelEntry>*>(data);
+  RigModelEntry entry;
+  entry.model = static_cast<int>(caps->rig_model);
+  entry.mfg = caps->mfg_name;
+  entry.name = caps->model_name;
+  list->push_back(std::move(entry));
+  return -1;
 }
 }  // namespace
 
@@ -263,6 +290,64 @@ Java_com_js8call_core_JS8Engine_nativeIsRunning(
     jlong handle) {
   JS8Engine_Native* engine = reinterpret_cast<JS8Engine_Native*>(handle);
   return js8_engine_is_running(engine) ? JNI_TRUE : JNI_FALSE;
+}
+
+JNIEXPORT jobjectArray JNICALL
+Java_com_js8call_core_HamlibRigCatalog_nativeListRigModels(
+    JNIEnv* env,
+    jobject /* thiz */) {
+  if (!env) {
+    return nullptr;
+  }
+
+  std::call_once(g_hamlib_loaded, []() {
+    rig_load_all_backends();
+  });
+
+  std::vector<RigModelEntry> list;
+  int status = rig_list_foreach(collect_rig_caps, &list);
+  if (status != RIG_OK) {
+    __android_log_print(ANDROID_LOG_WARN, "HamlibRigCatalog",
+                        "rig_list_foreach failed: %s", rigerror(status));
+  }
+
+  std::sort(list.begin(), list.end(), [](RigModelEntry const& a, RigModelEntry const& b) {
+    int cmp = strcasecmp(a.mfg.c_str(), b.mfg.c_str());
+    if (cmp != 0) return cmp < 0;
+    cmp = strcasecmp(a.name.c_str(), b.name.c_str());
+    if (cmp != 0) return cmp < 0;
+    return a.model < b.model;
+  });
+
+  jclass string_class = env->FindClass("java/lang/String");
+  if (!string_class) {
+    return nullptr;
+  }
+
+  jsize out_size = static_cast<jsize>(list.size() + 1);
+  jobjectArray result = env->NewObjectArray(out_size, string_class, nullptr);
+  if (!result) {
+    return nullptr;
+  }
+
+  jstring none_entry = env->NewStringUTF("0|None");
+  env->SetObjectArrayElement(result, 0, none_entry);
+  env->DeleteLocalRef(none_entry);
+
+  for (size_t i = 0; i < list.size(); ++i) {
+    const auto& entry = list[i];
+    std::string label = entry.mfg;
+    if (!label.empty()) {
+      label.push_back(' ');
+    }
+    label += entry.name;
+    std::string packed = std::to_string(entry.model) + "|" + label;
+    jstring packed_str = env->NewStringUTF(packed.c_str());
+    env->SetObjectArrayElement(result, static_cast<jsize>(i + 1), packed_str);
+    env->DeleteLocalRef(packed_str);
+  }
+
+  return result;
 }
 
 }  // extern "C"

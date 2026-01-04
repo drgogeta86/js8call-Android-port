@@ -71,9 +71,6 @@ dependencies {
     // LocalBroadcastManager
     implementation("androidx.localbroadcastmanager:localbroadcastmanager:1.1.0")
 
-    // USB Serial for rig control
-    implementation("com.github.mik3y:usb-serial-for-android:3.7.3")
-
     // Testing
     testImplementation("junit:junit:4.13.2")
     androidTestImplementation("androidx.test.ext:junit:1.1.5")
