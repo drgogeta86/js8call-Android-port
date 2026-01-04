@@ -10,6 +10,10 @@ android/fftw3-build/
 android/hamlib/hamlib-src/
 android/hamlib/hamlib-build/
 android/libs/hamlib/
+android/keystore.properties
+android/*.jks
+android/*.keystore
+android/*.p12
 
 # CMake build artifacts
 CMakeCache.txt

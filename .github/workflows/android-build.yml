@@ -135,6 +135,23 @@ jobs:
     - name: Grant execute permission for gradlew
       run: chmod +x android/gradlew
 
+    - name: Prepare release keystore
+      if: matrix.build-type == 'release'
+      run: |
+        if [ -z "${{ secrets.JS8_KEYSTORE_BASE64 }}" ]; then
+          echo "Missing JS8_KEYSTORE_BASE64 secret"
+          exit 1
+        fi
+        echo "${{ secrets.JS8_KEYSTORE_BASE64 }}" | base64 -d > android/release.jks
+
+    - name: Configure release signing env
+      if: matrix.build-type == 'release'
+      run: |
+        echo "JS8_KEYSTORE_FILE=release.jks" >> "$GITHUB_ENV"
+        echo "JS8_KEYSTORE_PASSWORD=${{ secrets.JS8_KEYSTORE_PASSWORD }}" >> "$GITHUB_ENV"
+        echo "JS8_KEY_ALIAS=${{ secrets.JS8_KEY_ALIAS }}" >> "$GITHUB_ENV"
+        echo "JS8_KEY_PASSWORD=${{ secrets.JS8_KEY_PASSWORD }}" >> "$GITHUB_ENV"
+
     - name: Build with Gradle
       working-directory: android
       run: |

@@ -168,6 +168,6 @@
     <string name="format_frequency">%d Hz</string>
     <string name="format_snr">%+d dB</string>
     <string name="format_dt">%+.1f s</string>
-    <string name="format_time">%02d:%02d</string>
-    <string name="format_decode">%04d  %+3d dB  %+5.1f s  %7.1f Hz  %s</string>
+    <string name="format_time">%1$02d:%2$02d</string>
+    <string name="format_decode">%1$04d  %2$+3d dB  %3$+5.1f s  %4$7.1f Hz  %5$s</string>
 </resources>

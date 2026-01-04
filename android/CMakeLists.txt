@@ -27,9 +27,9 @@ if(ANDROID)
   # Enable exceptions and RTTI
   set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fexceptions -frtti")
 
-  # Enable LTO for release builds
+  # LTO adds -fuse-ld=gold with NDK Clang; disable to keep macOS builds working.
   if(CMAKE_BUILD_TYPE STREQUAL "Release")
-    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION ON)
+    set(CMAKE_INTERPROCEDURAL_OPTIMIZATION OFF)
   endif()
 else()
   message(WARNING "Not building for Android - some features may not work")
