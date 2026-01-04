@@ -30,6 +30,7 @@ env:
   BOOST_VERSION: 1.83.0
   BOOST_VERSION_UNDERSCORE: 1_83_0
   HAMLIB_VERSION: master
+  ANDROID_NDK_VERSION: 26.1.10909125
 
 jobs:
   build:
@@ -57,7 +58,12 @@ jobs:
 
     - name: Install NDK
       run: |
-        sdkmanager --install "ndk;26.1.10909125" "cmake;3.22.1"
+        sdkmanager --install "ndk;${ANDROID_NDK_VERSION}" "cmake;3.22.1"
+
+    - name: Select NDK
+      run: |
+        echo "ANDROID_NDK_HOME=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
+        echo "ANDROID_NDK_ROOT=${ANDROID_HOME}/ndk/${ANDROID_NDK_VERSION}" >> "$GITHUB_ENV"
 
     - name: Install Hamlib build dependencies
       run: |
@@ -71,12 +77,13 @@ jobs:
         path: |
           android/hamlib/hamlib-src
           android/libs/hamlib
-        key: ${{ runner.os }}-hamlib-${{ env.HAMLIB_VERSION }}-ndk26-${{ hashFiles('android/hamlib/patches/*.patch', 'android/hamlib/build-hamlib-android.sh') }}
+        key: ${{ runner.os }}-hamlib-${{ env.HAMLIB_VERSION }}-ndk-${{ env.ANDROID_NDK_VERSION }}-${{ hashFiles('android/hamlib/patches/*.patch', 'android/hamlib/build-hamlib-android.sh') }}
 
     - name: Build Hamlib
       if: steps.cache-hamlib.outputs.cache-hit != 'true'
       run: |
-        export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/26.1.10909125
+        export ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT
+        export ANDROID_NDK_HOME=$ANDROID_NDK_HOME
         export HAMLIB_VERSION=${HAMLIB_VERSION}
         ./android/hamlib/build-hamlib-android.sh
 
@@ -116,12 +123,12 @@ jobs:
       uses: actions/cache@v4
       with:
         path: android/libs/fftw3
-        key: ${{ runner.os }}-fftw3-3.3.10-ndk26
+        key: ${{ runner.os }}-fftw3-3.3.10-ndk-${{ env.ANDROID_NDK_VERSION }}
 
     - name: Build FFTW3
       if: steps.cache-fftw3.outputs.cache-hit != 'true'
       run: |
-        export ANDROID_NDK_ROOT=$ANDROID_HOME/ndk/26.1.10909125
+        export ANDROID_NDK_ROOT=$ANDROID_NDK_ROOT
         cd android
         ./build-fftw3.sh
 
