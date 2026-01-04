@@ -12,18 +12,6 @@
         <item>hamlib_usb</item>
     </string-array>
 
-    <!-- Theme Options -->
-    <string-array name="theme_entries">
-        <item>Light</item>
-        <item>Dark</item>
-        <item>System Default</item>
-    </string-array>
-    <string-array name="theme_values">
-        <item>light</item>
-        <item>dark</item>
-        <item>system</item>
-    </string-array>
-
     <!-- JS8Call Frequency Options -->
     <string-array name="js8_frequency_entries">
         <item>80m - 3.573 MHz</item>

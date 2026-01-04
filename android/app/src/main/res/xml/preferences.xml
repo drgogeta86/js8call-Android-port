@@ -189,16 +189,6 @@
         app:title="@string/settings_category_general"
         app:iconSpaceReserved="false">
 
-        <ListPreference
-            app:key="theme"
-            app:title="@string/settings_theme"
-            app:summary="@string/settings_theme_summary"
-            app:entries="@array/theme_entries"
-            app:entryValues="@array/theme_values"
-            app:defaultValue="system"
-            app:useSimpleSummaryProvider="true"
-            app:iconSpaceReserved="false" />
-
         <SwitchPreferenceCompat
             app:key="autoreply_enabled"
             app:title="@string/settings_autoreply"
