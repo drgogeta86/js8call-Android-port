@@ -3,7 +3,7 @@ set -euo pipefail
 
 SCRIPT_DIR=$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)
 ROOT_DIR=$(cd "${SCRIPT_DIR}/../.." && pwd)
-PATCH_FILE="${SCRIPT_DIR}/patches/0001-android-usb-serial-bridge.patch"
+PATCH_DIR="${SCRIPT_DIR}/patches"
 
 HAMLIB_SRC="${HAMLIB_SRC:-${SCRIPT_DIR}/hamlib-src}"
 HAMLIB_BUILD="${HAMLIB_BUILD:-${SCRIPT_DIR}/hamlib-build}"
@@ -43,18 +43,20 @@ git fetch --tags origin
 
 git checkout "${HAMLIB_VERSION}"
 
-if ! git diff --quiet; then
-  if git apply --reverse --check "${PATCH_FILE}" >/dev/null 2>&1; then
-    echo "Hamlib patch already applied; continuing."
+for patch in "${PATCH_DIR}"/*.patch; do
+  if [[ ! -f "${patch}" ]]; then
+    continue
+  fi
+
+  if git apply --check "${patch}" >/dev/null 2>&1; then
+    git apply "${patch}"
+  elif git apply --reverse --check "${patch}" >/dev/null 2>&1; then
+    echo "Hamlib patch already applied: $(basename "${patch}")"
   else
-    echo "Hamlib source tree is dirty: ${HAMLIB_SRC}" >&2
+    echo "Hamlib source tree is dirty or patch failed: ${patch}" >&2
     exit 1
   fi
-fi
-
-if git apply --check "${PATCH_FILE}" >/dev/null 2>&1; then
-  git apply "${PATCH_FILE}"
-fi
+done
 
 if [[ ! -x "${HAMLIB_SRC}/configure" ]]; then
   ./bootstrap
