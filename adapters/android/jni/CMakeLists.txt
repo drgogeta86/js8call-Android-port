@@ -38,8 +38,18 @@ if(ANDROID)
   # Hamlib static library for rig model enumeration
   set(HAMLIB_ROOT "${CMAKE_CURRENT_SOURCE_DIR}/../../../android/libs/hamlib/${ANDROID_ABI}")
   if(EXISTS "${HAMLIB_ROOT}/lib/libhamlib.a")
+    set(HAMLIB_LIB "${HAMLIB_ROOT}/lib/libhamlib.a")
     target_include_directories(js8core-jni PRIVATE "${HAMLIB_ROOT}/include")
-    target_link_libraries(js8core-jni PRIVATE "${HAMLIB_ROOT}/lib/libhamlib.a" m)
+    if(CMAKE_BUILD_TYPE STREQUAL "Release")
+      target_link_libraries(js8core-jni PRIVATE
+        -Wl,--whole-archive
+        "${HAMLIB_LIB}"
+        -Wl,--no-whole-archive
+        m
+      )
+    else()
+      target_link_libraries(js8core-jni PRIVATE "${HAMLIB_LIB}" m)
+    endif()
   else()
     message(FATAL_ERROR "Hamlib not found at ${HAMLIB_ROOT}. Build hamlib for ${ANDROID_ABI}.")
   endif()
