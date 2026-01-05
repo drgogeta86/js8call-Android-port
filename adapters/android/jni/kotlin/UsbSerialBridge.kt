@@ -143,9 +143,8 @@ class UsbSerialBridge(private val context: Context) {
                 selectedPort.setParameters(baudRate, dataBits, stopBits, parity)
                 try {
                     selectedPort.dtr = true
-                    selectedPort.rts = true
                 } catch (e: Exception) {
-                    Log.d(TAG, "Failed to set DTR/RTS: ${e.message}")
+                    Log.d(TAG, "Failed to set DTR: ${e.message}")
                 }
                 port = selectedPort
                 activeDeviceId = deviceId

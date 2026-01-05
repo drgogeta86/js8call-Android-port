@@ -6,6 +6,7 @@ import androidx.preference.ListPreference
 import androidx.preference.PreferenceFragmentCompat
 import com.js8call.core.HamlibRigCatalog
 import com.js8call.core.UsbSerialPortCatalog
+import com.js8call.example.BuildConfig
 import com.js8call.example.R
 
 /**
@@ -15,6 +16,12 @@ class SettingsFragment : PreferenceFragmentCompat() {
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         setPreferencesFromResource(R.xml.preferences, rootKey)
+
+        val prefs = preferenceManager.sharedPreferences
+        if (prefs != null && !prefs.contains("my_status")) {
+            val statusPref = findPreference<EditTextPreference>("my_status")
+            statusPref?.text = "JS8Android ${BuildConfig.VERSION_NAME}"
+        }
 
         val rigModelPref = findPreference<ListPreference>("rig_hamlib_model")
         if (rigModelPref != null) {
@@ -60,7 +67,6 @@ class SettingsFragment : PreferenceFragmentCompat() {
                 }
             }
 
-            val prefs = preferenceManager.sharedPreferences
             val currentValue = prefs?.getString("rig_hamlib_usb_port", "auto") ?: "auto"
             if (currentValue == "auto") {
                 val deviceId = prefs?.getString("rig_usb_device_id", "")?.toIntOrNull()
