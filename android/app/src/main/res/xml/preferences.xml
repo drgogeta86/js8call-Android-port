@@ -42,6 +42,13 @@
         app:title="@string/settings_category_audio"
         app:iconSpaceReserved="false">
 
+        <SwitchPreferenceCompat
+            app:key="tx_boost_enabled"
+            app:title="@string/settings_tx_boost"
+            app:summary="@string/settings_tx_boost_summary"
+            app:defaultValue="false"
+            app:iconSpaceReserved="false" />
+
     </PreferenceCategory>
 
     <!-- Radio Category -->

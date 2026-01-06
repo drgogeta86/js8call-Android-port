@@ -182,6 +182,16 @@ Java_com_js8call_core_JS8Engine_nativeSetOutputDevice(
   js8_engine_set_output_device(engine, static_cast<int>(device_id));
 }
 
+JNIEXPORT void JNICALL
+Java_com_js8call_core_JS8Engine_nativeSetTxBoostEnabled(
+    JNIEnv* /* env */,
+    jobject /* thiz */,
+    jlong handle,
+    jboolean enabled) {
+  JS8Engine_Native* engine = reinterpret_cast<JS8Engine_Native*>(handle);
+  js8_engine_set_tx_boost_enabled(engine, static_cast<bool>(enabled));
+}
+
 JNIEXPORT jboolean JNICALL
 Java_com_js8call_core_JS8Engine_nativeTransmitMessage(
     JNIEnv* env,

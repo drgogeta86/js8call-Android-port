@@ -31,6 +31,7 @@ JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeSubmitAudioRaw(
 JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeSetFrequency(JNIEnv*, jobject, jlong, jlong);
 JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeSetSubmodes(JNIEnv*, jobject, jlong, jint);
 JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeSetOutputDevice(JNIEnv*, jobject, jlong, jint);
+JNIEXPORT void JNICALL Java_com_js8call_core_JS8Engine_nativeSetTxBoostEnabled(JNIEnv*, jobject, jlong, jboolean);
 JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeIsRunning(JNIEnv*, jobject, jlong);
 JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeTransmitMessage(JNIEnv*, jobject, jlong, jstring, jstring, jstring, jstring, jint, jdouble, jdouble, jboolean, jboolean);
 JNIEXPORT jboolean JNICALL Java_com_js8call_core_JS8Engine_nativeTransmitFrame(JNIEnv*, jobject, jlong, jstring, jint, jint, jdouble, jdouble);
@@ -57,6 +58,9 @@ struct JS8Engine_Native {
   // Java callback handler (global ref)
   jobject callback_handler = nullptr;
   std::mutex callback_mutex;
+
+  bool tx_boost_enabled = false;
+  std::mutex tx_boost_mutex;
 
   // Audio buffer for submission
   js8core::AudioFormat audio_format;
@@ -658,6 +662,13 @@ void js8_engine_set_output_device(JS8Engine_Native* engine, int device_id) {
   engine->audio_out->set_device_id(device_id);
 }
 
+void js8_engine_set_tx_boost_enabled(JS8Engine_Native* engine, bool enabled) {
+  if (!engine || !engine->engine) return;
+  std::lock_guard<std::mutex> lock(engine->tx_boost_mutex);
+  engine->tx_boost_enabled = enabled;
+  engine->engine->set_tx_boost_enabled(enabled);
+}
+
 int js8_engine_transmit_message(JS8Engine_Native* engine,
                                 const char* text,
                                 const char* my_call,
@@ -752,6 +763,7 @@ int js8_register_natives(JavaVM* vm, JNIEnv* env) {
     {"nativeSetFrequency", "(JJ)V", (void*)Java_com_js8call_core_JS8Engine_nativeSetFrequency},
     {"nativeSetSubmodes", "(JI)V", (void*)Java_com_js8call_core_JS8Engine_nativeSetSubmodes},
     {"nativeSetOutputDevice", "(JI)V", (void*)Java_com_js8call_core_JS8Engine_nativeSetOutputDevice},
+    {"nativeSetTxBoostEnabled", "(JZ)V", (void*)Java_com_js8call_core_JS8Engine_nativeSetTxBoostEnabled},
     {"nativeTransmitMessage", "(JLjava/lang/String;Ljava/lang/String;Ljava/lang/String;Ljava/lang/String;IDDZZ)Z",
      (void*)Java_com_js8call_core_JS8Engine_nativeTransmitMessage},
     {"nativeTransmitFrame", "(JLjava/lang/String;IIDD)Z",

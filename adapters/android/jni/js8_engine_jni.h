@@ -25,6 +25,7 @@ int js8_engine_submit_audio_raw(JS8Engine_Native* engine, const int16_t* samples
 void js8_engine_set_frequency(JS8Engine_Native* engine, uint64_t frequency_hz);
 void js8_engine_set_submodes(JS8Engine_Native* engine, int submodes);
 void js8_engine_set_output_device(JS8Engine_Native* engine, int device_id);
+void js8_engine_set_tx_boost_enabled(JS8Engine_Native* engine, bool enabled);
 
 // Transmit control
 int js8_engine_transmit_message(JS8Engine_Native* engine,

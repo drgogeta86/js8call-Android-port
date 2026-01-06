@@ -349,7 +349,11 @@ public:
     return tx_modulator_.is_active();
   }
 
-private:
+  void set_tx_boost_enabled(bool enabled) override {
+    config_.tx_output_gain_boost_enabled = enabled;
+  }
+
+ private:
     struct SubmodeSchedule {
       protocol::SubmodeId id;
       int period_samples;
@@ -736,6 +740,9 @@ private:
                             [this]() { return next_tx_sample_locked(); });
 
       float gain = std::clamp(config_.tx_output_gain, 0.0f, 1.0f);
+      if (config_.tx_output_gain_boost_enabled) {
+        gain *= 3.1623f;
+      }
       if (gain != 1.0f) {
         for (std::size_t i = 0; i < frames; ++i) {
           tx_float_buffer_[i] *= gain;
@@ -770,7 +777,12 @@ private:
 
       auto* out = reinterpret_cast<std::int16_t*>(buffer.data.data());
       for (std::size_t i = 0; i < frames; ++i) {
-        float v = std::clamp(tx_float_buffer_[i], -1.0f, 1.0f);
+        float v = tx_float_buffer_[i];
+        if (config_.tx_output_gain_boost_enabled) {
+          v = std::tanh(v);
+        } else {
+          v = std::clamp(v, -1.0f, 1.0f);
+        }
         auto sample = static_cast<std::int16_t>(std::lround(v * 32767.0f));
         for (int ch = 0; ch < buffer.format.channels; ++ch) {
           *out++ = sample;

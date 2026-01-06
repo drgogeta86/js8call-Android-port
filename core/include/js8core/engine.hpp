@@ -72,6 +72,7 @@ struct EngineConfig {
   int submodes = 0;
   int tx_output_rate_hz = 48000;
   float tx_output_gain = 1.0f;
+  bool tx_output_gain_boost_enabled = false;
 };
 
 struct TxMessageRequest {
@@ -125,6 +126,7 @@ public:
   virtual void stop_transmit() = 0;
   virtual bool is_transmitting() const = 0;
   virtual bool is_transmitting_audio() const = 0;
+  virtual void set_tx_boost_enabled(bool enabled) = 0;
 };
 
 std::unique_ptr<Js8Engine> make_engine(EngineConfig const& config,

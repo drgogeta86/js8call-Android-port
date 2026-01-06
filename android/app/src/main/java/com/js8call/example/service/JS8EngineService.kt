@@ -278,6 +278,8 @@ class JS8EngineService : Service() {
             if (engine?.start() == true) {
                 Log.i(TAG, "Engine started successfully")
 
+                applyTxBoostSetting()
+
                 updateOutputDeviceForInput(selectedAudioDeviceId)
 
                 // Start audio capture with selected device (if any)
@@ -328,6 +330,13 @@ class JS8EngineService : Service() {
             "hamlib_usb" -> initializeHamlibUsbControl()
             else -> Log.w(TAG, "Unknown rig type: $rigType")
         }
+    }
+
+    private fun applyTxBoostSetting() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val txBoostEnabled = prefs.getBoolean("tx_boost_enabled", false)
+        engine?.setTxBoostEnabled(txBoostEnabled)
+        Log.i(TAG, "TX boost: ${if (txBoostEnabled) "enabled (+10 dB)" else "disabled"}")
     }
 
     private fun initializeNetworkRigControl() {

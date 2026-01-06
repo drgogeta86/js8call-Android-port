@@ -111,7 +111,17 @@ class JS8Engine private constructor(
     }
 
     /**
-     * Set the preferred output audio device ID (0 or negative for default).
+     * Enable or disable TX output boost (+10 dB).
+     *
+     * @param enabled true to enable boost, false to disable
+     */
+    fun setTxBoostEnabled(enabled: Boolean) {
+        checkNotClosed()
+        nativeSetTxBoostEnabled(nativeHandle, enabled)
+    }
+
+    /**
+     * Set preferred output audio device ID (0 or negative for default).
      */
     fun setOutputDevice(deviceId: Int) {
         checkNotClosed()
@@ -119,7 +129,7 @@ class JS8Engine private constructor(
     }
 
     /**
-     * Check if engine is running.
+     * Check if the engine is running.
      */
     fun isRunning(): Boolean {
         return nativeHandle != 0L && nativeIsRunning(nativeHandle)
@@ -184,7 +194,12 @@ class JS8Engine private constructor(
         txDelaySec: Double = 0.0
     ): Boolean {
         checkNotClosed()
-        return nativeStartTune(nativeHandle, audioFrequencyHz, submode, txDelaySec)
+        return nativeStartTune(
+            nativeHandle,
+            audioFrequencyHz,
+            submode,
+            txDelaySec
+        )
     }
 
     /**
@@ -246,6 +261,7 @@ class JS8Engine private constructor(
     private external fun nativeSetFrequency(handle: Long, frequencyHz: Long)
     private external fun nativeSetSubmodes(handle: Long, submodes: Int)
     private external fun nativeSetOutputDevice(handle: Long, deviceId: Int)
+    private external fun nativeSetTxBoostEnabled(handle: Long, enabled: Boolean)
     private external fun nativeIsRunning(handle: Long): Boolean
     private external fun nativeTransmitMessage(
         handle: Long,
