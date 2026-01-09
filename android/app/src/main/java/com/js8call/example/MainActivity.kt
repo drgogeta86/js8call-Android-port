@@ -6,6 +6,7 @@ import android.content.Context
 import android.content.Intent
 import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.os.Build
 import android.os.Bundle
 import android.view.WindowManager
 import androidx.appcompat.app.AppCompatActivity
@@ -46,6 +47,7 @@ class MainActivity : AppCompatActivity() {
 
     companion object {
         private const val REQUEST_RECORD_AUDIO = 1
+        private const val REQUEST_BLUETOOTH_CONNECT = 3
         private const val REQUEST_LOCATION = 2
         private const val PREF_KEEP_SCREEN_ON = "keep_screen_on"
     }
@@ -120,6 +122,29 @@ class MainActivity : AppCompatActivity() {
                 requestAudioPermission()
             }
         }
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            when {
+                ContextCompat.checkSelfPermission(
+                    this,
+                    Manifest.permission.BLUETOOTH_CONNECT
+                ) == PackageManager.PERMISSION_GRANTED -> {
+                    // Permission already granted
+                }
+                shouldShowRequestPermissionRationale(Manifest.permission.BLUETOOTH_CONNECT) -> {
+                    Snackbar.make(
+                        findViewById(android.R.id.content),
+                        "Bluetooth permission needed for SCO audio routing",
+                        Snackbar.LENGTH_LONG
+                    ).setAction("Grant") {
+                        requestBluetoothPermission()
+                    }.show()
+                }
+                else -> {
+                    requestBluetoothPermission()
+                }
+            }
+        }
     }
 
     private fun requestAudioPermission() {
@@ -127,6 +152,14 @@ class MainActivity : AppCompatActivity() {
             this,
             arrayOf(Manifest.permission.RECORD_AUDIO),
             REQUEST_RECORD_AUDIO
+        )
+    }
+
+    private fun requestBluetoothPermission() {
+        ActivityCompat.requestPermissions(
+            this,
+            arrayOf(Manifest.permission.BLUETOOTH_CONNECT),
+            REQUEST_BLUETOOTH_CONNECT
         )
     }
 
@@ -153,6 +186,23 @@ class MainActivity : AppCompatActivity() {
                     Snackbar.make(
                         findViewById(android.R.id.content),
                         R.string.permission_audio_denied,
+                        Snackbar.LENGTH_LONG
+                    ).show()
+                }
+            }
+            REQUEST_BLUETOOTH_CONNECT -> {
+                if (grantResults.isNotEmpty() &&
+                    grantResults[0] == PackageManager.PERMISSION_GRANTED
+                ) {
+                    Snackbar.make(
+                        findViewById(android.R.id.content),
+                        "Bluetooth permission granted",
+                        Snackbar.LENGTH_SHORT
+                    ).show()
+                } else {
+                    Snackbar.make(
+                        findViewById(android.R.id.content),
+                        "Bluetooth permission denied; SCO audio may not work",
                         Snackbar.LENGTH_LONG
                     ).show()
                 }

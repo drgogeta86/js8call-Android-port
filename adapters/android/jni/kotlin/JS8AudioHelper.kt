@@ -29,7 +29,7 @@ class JS8AudioHelper(
 ) : AutoCloseable {
 
     companion object {
-        private const val CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
+        private const val DEFAULT_CHANNEL_CONFIG = AudioFormat.CHANNEL_IN_MONO
         private const val AUDIO_FORMAT = AudioFormat.ENCODING_PCM_16BIT
     }
 
@@ -40,10 +40,12 @@ class JS8AudioHelper(
     // Capture at 48kHz (native USB rate) and downsample natively to target rate
     private var captureSampleRate = 48000
     private var actualSampleRate = captureSampleRate
-    private val audioSource = MediaRecorder.AudioSource.MIC
+    private var audioSource = MediaRecorder.AudioSource.MIC
     private var agc: AutomaticGainControl? = null
     private var noiseSuppressor: NoiseSuppressor? = null
     private var echoCanceler: AcousticEchoCanceler? = null
+    private var preferredDeviceType: Int = AudioDeviceInfo.TYPE_UNKNOWN
+    private var inputChannelCount = 1
 
     /**
      * Set preferred audio input device.
@@ -51,6 +53,8 @@ class JS8AudioHelper(
      */
     fun setPreferredDevice(deviceId: Int) {
         preferredDeviceId = deviceId
+
+        preferredDeviceType = resolvePreferredDevice()?.type ?: AudioDeviceInfo.TYPE_UNKNOWN
 
         // If already recording, update the device
         if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.M && context != null) {
@@ -91,32 +95,42 @@ class JS8AudioHelper(
         }
 
         try {
-            val candidates = listOf(48000, 44100)
-            var bufferSize = 0
-            for (rate in candidates) {
-                val minBufferSize = AudioRecord.getMinBufferSize(
-                    rate,
-                    CHANNEL_CONFIG,
-                    AUDIO_FORMAT
-                )
-                if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
-                    continue
-                }
-                // Use 2x minimum buffer size for balance between latency and reliability
-                bufferSize = minBufferSize * 2
-                val record = AudioRecord(
-                    audioSource,
-                    rate,
-                    CHANNEL_CONFIG,
-                    AUDIO_FORMAT,
-                    bufferSize
-                )
-                if (record.state == AudioRecord.STATE_INITIALIZED) {
-                    audioRecord = record
-                    captureSampleRate = rate
-                    break
-                } else {
-                    record.release()
+            val preferredDevice = resolvePreferredDevice()
+            preferredDeviceType = preferredDevice?.type ?: AudioDeviceInfo.TYPE_UNKNOWN
+            audioSource = pickAudioSource(preferredDeviceType)
+            val candidates = buildSampleRateCandidates(preferredDeviceType, preferredDevice)
+            val channelMasks = buildChannelMaskCandidates(preferredDevice)
+            var bufferSizeBytes = 0
+            loop@ for (channelMask in channelMasks) {
+                for (rate in candidates) {
+                    val minBufferSize = AudioRecord.getMinBufferSize(
+                        rate,
+                        channelMask,
+                        AUDIO_FORMAT
+                    )
+                    if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
+                        continue
+                    }
+                    // Use 2x minimum buffer size for balance between latency and reliability
+                    bufferSizeBytes = minBufferSize * 2
+                    val format = AudioFormat.Builder()
+                        .setChannelMask(channelMask)
+                        .setEncoding(AUDIO_FORMAT)
+                        .setSampleRate(rate)
+                        .build()
+                    val builder = AudioRecord.Builder()
+                        .setAudioSource(audioSource)
+                        .setAudioFormat(format)
+                        .setBufferSizeInBytes(bufferSizeBytes)
+                    val record = builder.build()
+                    if (record.state == AudioRecord.STATE_INITIALIZED) {
+                        audioRecord = record
+                        captureSampleRate = rate
+                        inputChannelCount = record.channelCount
+                        break@loop
+                    } else {
+                        record.release()
+                    }
                 }
             }
 
@@ -163,8 +177,10 @@ class JS8AudioHelper(
             android.util.Log.i("JS8AudioHelper",
                 "Audio capture started: requested $captureSampleRate Hz, actual $actualSampleRate Hz, " +
                 "target $targetSampleRate Hz, source=${audioSourceName(audioSource)}, " +
+                "deviceType=${deviceTypeName(preferredDeviceType)}, " +
                 "handing raw audio to native downsampler " +
-                "(resample ratio: ${"%.3f".format(resampleRatio)}), buffer size: $bufferSize samples")
+                "(resample ratio: ${"%.3f".format(resampleRatio)}), " +
+                "channels=$inputChannelCount, buffer size: $bufferSizeBytes bytes")
 
             if (actualSampleRate % targetSampleRate != 0) {
                 android.util.Log.i(
@@ -211,30 +227,38 @@ class JS8AudioHelper(
 
     private fun recordLoop() {
         val recorder = audioRecord ?: return
-        val bufferSize = 4096  // Process in 4K chunks at 48kHz
-        val buffer = ShortArray(bufferSize)
+        val framesPerRead = 4096  // Process in 4K frame chunks at 48kHz
+        val channels = recorder.channelCount.coerceAtLeast(1)
+        val buffer = ShortArray(framesPerRead * channels)
+        val monoBuffer = if (channels > 1) ShortArray(framesPerRead) else null
         var totalSamples = 0L
         var lastLogTime = System.currentTimeMillis()
         var lastReadNs = System.nanoTime()
 
         while (isRecording) {
             val readStartNs = System.nanoTime()
-            val samplesRead = recorder.read(buffer, 0, bufferSize)
+            val samplesRead = recorder.read(buffer, 0, buffer.size)
             val readEndNs = System.nanoTime()
-            val gapMs = (readStartNs - lastReadNs) / 1_000_000
-            val readDurationMs = (readEndNs - readStartNs) / 1_000_000
-            if (gapMs > 200) {
-                android.util.Log.w("JS8AudioHelper",
-                    "Audio read gap: gapMs=$gapMs, lastReadMs=${readDurationMs}, samplesRead=$samplesRead")
-            } else if (readDurationMs > 200) {
-                android.util.Log.w("JS8AudioHelper",
-                    "Audio read slow: durationMs=$readDurationMs, samplesRead=$samplesRead")
-            }
             lastReadNs = readEndNs
 
             if (samplesRead > 0) {
                 val timestamp = System.nanoTime()
-                val success = engine.submitAudioRaw(buffer, samplesRead, actualSampleRate, timestamp)
+                val success = if (channels > 1) {
+                    val framesRead = samplesRead / channels
+                    if (framesRead <= 0) {
+                        false
+                    } else {
+                        val out = monoBuffer ?: ShortArray(framesRead)
+                        for (i in 0 until framesRead) {
+                            val left = buffer[i * channels]
+                            val right = buffer[i * channels + 1]
+                            out[i] = ((left + right) / 2).toShort()
+                        }
+                        engine.submitAudioRaw(out, framesRead, actualSampleRate, timestamp)
+                    }
+                } else {
+                    engine.submitAudioRaw(buffer, samplesRead, actualSampleRate, timestamp)
+                }
                 if (!success) {
                     android.util.Log.w("JS8AudioHelper", "submitAudioRaw failed for $samplesRead samples")
                 }
@@ -248,7 +272,7 @@ class JS8AudioHelper(
                     android.util.Log.d("JS8AudioHelper",
                         "Audio: $samplesRead samples @ ${captureSampleRate}Hz (raw), " +
                         "success=$success, rate=${sampleRate.toInt()} samples/sec, " +
-                        "first3=[${buffer[0]}, ${buffer[1]}, ${buffer[2]}]")
+                        "channels=$channels, first3=[${buffer[0]}, ${buffer[1]}, ${buffer[2]}]")
                     lastLogTime = now
                     totalSamples = 0
                 }
@@ -264,6 +288,53 @@ class JS8AudioHelper(
                 }
             }
         }
+    }
+
+    private fun resolvePreferredDevice(): AudioDeviceInfo? {
+        if (preferredDeviceId < 0 || context == null) return null
+        val audioManager = context!!.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        return audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .firstOrNull { it.id == preferredDeviceId }
+    }
+
+    private fun pickAudioSource(deviceType: Int): Int {
+        return when (deviceType) {
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            else -> MediaRecorder.AudioSource.MIC
+        }
+    }
+
+    private fun buildSampleRateCandidates(
+        deviceType: Int,
+        device: AudioDeviceInfo?
+    ): List<Int> {
+        val candidates = LinkedHashSet<Int>()
+        if (deviceType == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+            candidates.add(16000)
+            candidates.add(8000)
+        }
+        device?.sampleRates?.forEach { rate ->
+            if (rate > 0) candidates.add(rate)
+        }
+        candidates.add(48000)
+        candidates.add(44100)
+        return candidates.toList()
+    }
+
+    private fun buildChannelMaskCandidates(device: AudioDeviceInfo?): List<Int> {
+        val candidates = LinkedHashSet<Int>()
+        val channelCounts = device?.channelCounts ?: IntArray(0)
+        if (channelCounts.contains(1)) {
+            candidates.add(AudioFormat.CHANNEL_IN_MONO)
+        }
+        if (channelCounts.contains(2)) {
+            candidates.add(AudioFormat.CHANNEL_IN_STEREO)
+        }
+        if (candidates.isEmpty()) {
+            candidates.add(DEFAULT_CHANNEL_CONFIG)
+            candidates.add(AudioFormat.CHANNEL_IN_STEREO)
+        }
+        return candidates.toList()
     }
 
     private fun audioSourceName(source: Int): String {

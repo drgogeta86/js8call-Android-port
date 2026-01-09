@@ -379,6 +379,7 @@ class MonitorFragment : Fragment() {
         availableDevices.clear()
 
         for (device in devices) {
+            if (!device.isSource) continue
             val deviceName = when (device.type) {
                 AudioDeviceInfo.TYPE_BUILTIN_MIC -> "Internal Microphone"
                 AudioDeviceInfo.TYPE_WIRED_HEADSET -> "Wired Headset"

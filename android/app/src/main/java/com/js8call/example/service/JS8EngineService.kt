@@ -1,11 +1,13 @@
 package com.js8call.example.service
 
+import android.Manifest
 import android.app.Notification
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.Intent
+import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
 import android.os.Build
@@ -48,6 +50,8 @@ class JS8EngineService : Service() {
     private var selectedOutputDeviceId: Int = -1  // -1 means use default
     private var txMonitorActive = false
     private var txMonitorWasAudioActive = false
+    private var scoRoutingActive = false
+    private var previousAudioMode = AudioManager.MODE_NORMAL
     private var callsignWarningShown = false
     private var lastTxMessage: String = ""
     private val heartbeatRegex = Regex("^\\s*([^:]+):\\s+@HB\\s+HEARTBEAT\\b", RegexOption.IGNORE_CASE)
@@ -280,6 +284,7 @@ class JS8EngineService : Service() {
 
                 applyTxBoostSetting()
 
+                applyInputRouting(selectedAudioDeviceId)
                 updateOutputDeviceForInput(selectedAudioDeviceId)
 
                 // Start audio capture with selected device (if any)
@@ -523,6 +528,7 @@ class JS8EngineService : Service() {
             audioHelper?.close()
             audioHelper = null
             stopTxMonitor()
+            disableScoRouting()
 
             // Disconnect rig control on background thread
             val networkClientToDisconnect = rigCtlClient
@@ -678,13 +684,16 @@ class JS8EngineService : Service() {
         val inputName = inputDevice.productName?.toString()?.takeIf { it.isNotBlank() }
         val inputFamily = deviceFamily(inputDevice.type)
 
-        var output = if (inputName != null) {
+        var output = outputs.firstOrNull { device ->
+            device.type == inputDevice.type &&
+                (inputName == null || device.productName?.toString() == inputName)
+        }
+
+        if (output == null && inputName != null) {
             outputs.firstOrNull { device ->
                 device.productName?.toString() == inputName &&
                     (inputFamily.isEmpty() || deviceFamily(device.type) == inputFamily)
             }
-        } else {
-            null
         }
 
         if (output == null && inputName != null) {
@@ -703,8 +712,8 @@ class JS8EngineService : Service() {
             AudioDeviceInfo.TYPE_USB_DEVICE,
             AudioDeviceInfo.TYPE_USB_ACCESSORY,
             AudioDeviceInfo.TYPE_USB_HEADSET -> "usb"
-            AudioDeviceInfo.TYPE_BLUETOOTH_SCO,
-            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "bt"
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> "bt_sco"
+            AudioDeviceInfo.TYPE_BLUETOOTH_A2DP -> "bt_a2dp"
             AudioDeviceInfo.TYPE_WIRED_HEADSET -> "wired"
             AudioDeviceInfo.TYPE_BUILTIN_MIC -> "builtin"
             AudioDeviceInfo.TYPE_LINE_ANALOG,
@@ -744,20 +753,11 @@ class JS8EngineService : Service() {
             // Store the selected device ID
             selectedAudioDeviceId = deviceId
 
-            // If audio helper exists, just switch the device without restarting
-            audioHelper?.let { helper ->
-                helper.setPreferredDevice(deviceId)
-                Log.i(TAG, "Switched audio device to ID: $deviceId")
-
-                // Detect and broadcast the new device
-                val deviceName = getActiveAudioDevice()
-                broadcastAudioDevice(deviceName)
-                updateOutputDeviceForInput(deviceId)
-                return
-            }
-
-            // If no audio helper, create one with the new device
             if (engine != null) {
+                audioHelper?.stopCapture()
+                audioHelper?.close()
+                audioHelper = null
+                applyInputRouting(deviceId)
                 audioHelper = JS8AudioHelper(engine!!, 12000, deviceId, applicationContext)
                 if (audioHelper?.startCapture() == true) {
                     Log.i(TAG, "Audio capture started with device ID: $deviceId")
@@ -775,6 +775,124 @@ class JS8EngineService : Service() {
             Log.e(TAG, "Error switching audio device", e)
             broadcastError("Error switching audio device: ${e.message}")
         }
+    }
+
+    private fun applyInputRouting(inputDeviceId: Int) {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return
+        val inputDevice = findInputDevice(inputDeviceId)
+        if (inputDevice?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+            enableScoRouting(inputDevice)
+        } else {
+            disableScoRouting()
+        }
+    }
+
+    private fun findInputDevice(deviceId: Int): AudioDeviceInfo? {
+        if (deviceId < 0 || Build.VERSION.SDK_INT < Build.VERSION_CODES.M) return null
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        return audioManager.getDevices(AudioManager.GET_DEVICES_INPUTS)
+            .firstOrNull { it.id == deviceId }
+    }
+
+    private fun enableScoRouting(device: AudioDeviceInfo) {
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val priorMode = audioManager.mode
+
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            if (checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED) {
+                Log.w(TAG, "BLUETOOTH_CONNECT permission not granted; SCO routing unavailable")
+                broadcastError("Bluetooth permission required for SCO routing")
+                return
+            }
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            if (!scoRoutingActive) {
+                previousAudioMode = priorMode
+            }
+            val commDevice = findCommunicationDevice(device)
+            if (commDevice == null) {
+                Log.w(TAG, "No available communication device matches SCO input; falling back to SCO start")
+                if (!startBluetoothScoLegacy(audioManager, priorMode)) {
+                    broadcastError("Failed to start Bluetooth SCO routing")
+                }
+                return
+            }
+            val ok = audioManager.setCommunicationDevice(commDevice)
+            if (ok) {
+                scoRoutingActive = true
+                Log.i(TAG, "SCO routing enabled via communication device: ${commDevice.productName} (ID: ${commDevice.id})")
+            } else {
+                audioManager.mode = priorMode
+                Log.w(TAG, "Failed to set communication device for SCO; falling back to SCO start")
+                if (!startBluetoothScoLegacy(audioManager, priorMode)) {
+                    broadcastError("Failed to start Bluetooth SCO routing")
+                }
+            }
+        } else {
+            if (!scoRoutingActive) {
+                previousAudioMode = priorMode
+            }
+            audioManager.mode = AudioManager.MODE_IN_COMMUNICATION
+            try {
+                audioManager.startBluetoothSco()
+                audioManager.isBluetoothScoOn = true
+                scoRoutingActive = true
+                Log.i(TAG, "SCO routing enabled via startBluetoothSco")
+            } catch (e: SecurityException) {
+                audioManager.mode = priorMode
+                Log.w(TAG, "Failed to start Bluetooth SCO", e)
+                broadcastError("Bluetooth permission required for SCO routing")
+            }
+        }
+    }
+
+    private fun startBluetoothScoLegacy(audioManager: AudioManager, priorMode: Int): Boolean {
+        return try {
+            audioManager.startBluetoothSco()
+            audioManager.isBluetoothScoOn = true
+            scoRoutingActive = true
+            Log.i(TAG, "SCO routing enabled via legacy startBluetoothSco")
+            true
+        } catch (e: SecurityException) {
+            audioManager.mode = priorMode
+            Log.w(TAG, "Failed to start Bluetooth SCO (legacy)", e)
+            false
+        }
+    }
+
+    private fun findCommunicationDevice(inputDevice: AudioDeviceInfo): AudioDeviceInfo? {
+        if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S) return null
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        val candidates = audioManager.availableCommunicationDevices
+        if (candidates.isEmpty()) return null
+        candidates.firstOrNull { it.id == inputDevice.id }?.let { return it }
+        val inputName = inputDevice.productName?.toString()
+        candidates.firstOrNull {
+            it.type == inputDevice.type &&
+                (inputName == null || it.productName?.toString() == inputName)
+        }?.let { return it }
+        return candidates.firstOrNull { it.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO }
+    }
+
+    private fun disableScoRouting() {
+        if (!scoRoutingActive) return
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            try {
+                audioManager.clearCommunicationDevice()
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Failed to clear communication device", e)
+            }
+        } else {
+            try {
+                audioManager.stopBluetoothSco()
+                audioManager.isBluetoothScoOn = false
+            } catch (e: SecurityException) {
+                Log.w(TAG, "Failed to stop Bluetooth SCO", e)
+            }
+        }
+        audioManager.mode = previousAudioMode
+        scoRoutingActive = false
+        Log.i(TAG, "SCO routing disabled")
     }
 
     private fun handleTransmitMessage(intent: Intent) {
