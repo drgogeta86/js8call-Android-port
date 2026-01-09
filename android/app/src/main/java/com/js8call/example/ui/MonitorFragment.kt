@@ -44,6 +44,7 @@ class MonitorFragment : Fragment() {
     private lateinit var audioDeviceSpinner: Spinner
     private lateinit var frequencySpinner: Spinner
     private lateinit var startStopButton: Button
+    private lateinit var monitorVersionText: TextView
 
     // Audio device management
     private var audioDeviceAdapter: ArrayAdapter<AudioDeviceItem>? = null
@@ -117,9 +118,18 @@ class MonitorFragment : Fragment() {
         snrValue = view.findViewById(R.id.snr_value)
         powerValue = view.findViewById(R.id.power_value)
         txOffsetValue = view.findViewById(R.id.tx_offset_value)
+        monitorVersionText = view.findViewById(R.id.monitor_version)
         audioDeviceSpinner = view.findViewById(R.id.audio_device_spinner)
         frequencySpinner = view.findViewById(R.id.frequency_spinner)
         startStopButton = view.findViewById(R.id.start_stop_button)
+
+        // Set version text dynamically from package info
+        val versionName = try {
+            requireContext().packageManager.getPackageInfo(requireContext().packageName, 0).versionName
+        } catch (e: PackageManager.NameNotFoundException) {
+            "unknown"
+        }
+        monitorVersionText.text = "Version: $versionName"
 
         // Set up waterfall offset callback
         waterfallView.onOffsetChanged = { offsetHz ->

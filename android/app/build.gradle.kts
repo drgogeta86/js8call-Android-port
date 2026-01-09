@@ -14,8 +14,8 @@ android {
         applicationId = "com.js8call.example"
         minSdk = 26
         targetSdk = 34
-        versionCode = 1
-        versionName = "1.0-BETA1"
+        versionCode = 2
+        versionName = "1.0-BETA2"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
