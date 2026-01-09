@@ -124,17 +124,23 @@ class MainActivity : AppCompatActivity() {
         }
 
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val hasConnect = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.BLUETOOTH_CONNECT
+            ) == PackageManager.PERMISSION_GRANTED
+            val hasScan = ContextCompat.checkSelfPermission(
+                this,
+                Manifest.permission.BLUETOOTH_SCAN
+            ) == PackageManager.PERMISSION_GRANTED
             when {
-                ContextCompat.checkSelfPermission(
-                    this,
-                    Manifest.permission.BLUETOOTH_CONNECT
-                ) == PackageManager.PERMISSION_GRANTED -> {
+                hasConnect && hasScan -> {
                     // Permission already granted
                 }
-                shouldShowRequestPermissionRationale(Manifest.permission.BLUETOOTH_CONNECT) -> {
+                shouldShowRequestPermissionRationale(Manifest.permission.BLUETOOTH_CONNECT) ||
+                    shouldShowRequestPermissionRationale(Manifest.permission.BLUETOOTH_SCAN) -> {
                     Snackbar.make(
                         findViewById(android.R.id.content),
-                        "Bluetooth permission needed for SCO audio routing",
+                        "Bluetooth permission needed for device access",
                         Snackbar.LENGTH_LONG
                     ).setAction("Grant") {
                         requestBluetoothPermission()
@@ -158,7 +164,10 @@ class MainActivity : AppCompatActivity() {
     private fun requestBluetoothPermission() {
         ActivityCompat.requestPermissions(
             this,
-            arrayOf(Manifest.permission.BLUETOOTH_CONNECT),
+            arrayOf(
+                Manifest.permission.BLUETOOTH_CONNECT,
+                Manifest.permission.BLUETOOTH_SCAN
+            ),
             REQUEST_BLUETOOTH_CONNECT
         )
     }
@@ -191,9 +200,9 @@ class MainActivity : AppCompatActivity() {
                 }
             }
             REQUEST_BLUETOOTH_CONNECT -> {
-                if (grantResults.isNotEmpty() &&
-                    grantResults[0] == PackageManager.PERMISSION_GRANTED
-                ) {
+                val granted = grantResults.isNotEmpty() &&
+                    grantResults.all { it == PackageManager.PERMISSION_GRANTED }
+                if (granted) {
                     Snackbar.make(
                         findViewById(android.R.id.content),
                         "Bluetooth permission granted",
@@ -202,7 +211,7 @@ class MainActivity : AppCompatActivity() {
                 } else {
                     Snackbar.make(
                         findViewById(android.R.id.content),
-                        "Bluetooth permission denied; SCO audio may not work",
+                        "Bluetooth permission denied; Bluetooth devices may not work",
                         Snackbar.LENGTH_LONG
                     ).show()
                 }

@@ -125,22 +125,16 @@ enum serial_parity_e parse_parity(const std::string& parity) {
   return RIG_PARITY_NONE;
 }
 
-}  // namespace
-
-extern "C" JNIEXPORT jlong JNICALL
-Java_com_js8call_core_HamlibRigControl_nativeOpen(JNIEnv* env,
-                                                  jobject /*thiz*/,
-                                                  jint rig_model,
-                                                  jint device_id,
-                                                  jint port_index,
-                                                  jint baud_rate,
-                                                  jint data_bits,
-                                                  jint stop_bits,
-                                                  jstring parity) {
+jlong open_rig_with_path(int rig_model,
+                         const std::string& path,
+                         int baud_rate,
+                         int data_bits,
+                         int stop_bits,
+                         const std::string& parity_value) {
   std::call_once(g_hamlib_loaded, ensure_hamlib_loaded);
 
-  log_info("nativeOpen: model=%d device=%d port=%d baud=%d data=%d stop=%d",
-           rig_model, device_id, port_index, baud_rate, data_bits, stop_bits);
+  log_info("nativeOpen: model=%d path=%s baud=%d data=%d stop=%d",
+           rig_model, path.c_str(), baud_rate, data_bits, stop_bits);
 
   if (rig_model <= 0) {
     log_error("Invalid rig model: ", "model <= 0");
@@ -170,23 +164,20 @@ Java_com_js8call_core_HamlibRigControl_nativeOpen(JNIEnv* env,
     return 0;
   }
 
-  char path[64];
-  snprintf(path, sizeof(path), "android-usb:%d:%d", device_id, port_index);
-
   token_t path_token = rig_token_lookup(rig, "rig_pathname");
   if (path_token == 0) {
     rig_cleanup(rig);
-    log_error("rig_pathname token lookup failed: ", path);
+    log_error("rig_pathname token lookup failed: ", path.c_str());
     return 0;
   }
 
-  int ret = rig_set_conf(rig, path_token, path);
+  int ret = rig_set_conf(rig, path_token, path.c_str());
   if (ret != RIG_OK) {
     rig_cleanup(rig);
     log_error("rig_set_conf failed: ", rigerror(ret));
     return 0;
   }
-  log_info("rig_pathname=%s", path);
+  log_info("rig_pathname=%s", path.c_str());
 
   hamlib_port_t* port = &rig->state.rigport;
   if (port) {
@@ -195,12 +186,6 @@ Java_com_js8call_core_HamlibRigControl_nativeOpen(JNIEnv* env,
     port->parm.serial.data_bits = (data_bits == 7 || data_bits == 8) ? data_bits : 8;
     port->parm.serial.stop_bits = stop_bits == 2 ? 2 : 1;
     port->parm.serial.handshake = RIG_HANDSHAKE_NONE;
-
-    const char* parity_str = env->GetStringUTFChars(parity, nullptr);
-    std::string parity_value = parity_str ? parity_str : "";
-    if (parity_str) {
-      env->ReleaseStringUTFChars(parity, parity_str);
-    }
     port->parm.serial.parity = parse_parity(parity_value);
     log_info("serial params: baud=%d data=%d stop=%d parity=%s",
              port->parm.serial.rate,
@@ -266,6 +251,61 @@ Java_com_js8call_core_HamlibRigControl_nativeOpen(JNIEnv* env,
   auto* handle = new HamlibRigHandle();
   handle->rig = rig;
   return reinterpret_cast<jlong>(handle);
+}
+
+}  // namespace
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_js8call_core_HamlibRigControl_nativeOpen(JNIEnv* env,
+                                                  jobject /*thiz*/,
+                                                  jint rig_model,
+                                                  jint device_id,
+                                                  jint port_index,
+                                                  jint baud_rate,
+                                                  jint data_bits,
+                                                  jint stop_bits,
+                                                  jstring parity) {
+  char path[64];
+  snprintf(path, sizeof(path), "android-usb:%d:%d", device_id, port_index);
+
+  const char* parity_str = env->GetStringUTFChars(parity, nullptr);
+  std::string parity_value = parity_str ? parity_str : "";
+  if (parity_str) {
+    env->ReleaseStringUTFChars(parity, parity_str);
+  }
+
+  return open_rig_with_path(rig_model, path, baud_rate, data_bits, stop_bits, parity_value);
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_js8call_core_HamlibRigControl_nativeOpenWithPath(JNIEnv* env,
+                                                          jobject /*thiz*/,
+                                                          jint rig_model,
+                                                          jstring serial_path,
+                                                          jint baud_rate,
+                                                          jint data_bits,
+                                                          jint stop_bits,
+                                                          jstring parity) {
+  std::string path;
+  if (serial_path) {
+    const char* path_str = env->GetStringUTFChars(serial_path, nullptr);
+    if (path_str) {
+      path = path_str;
+      env->ReleaseStringUTFChars(serial_path, path_str);
+    }
+  }
+  if (path.empty()) {
+    log_error("Invalid serial path: ", "empty");
+    return 0;
+  }
+
+  const char* parity_str = env->GetStringUTFChars(parity, nullptr);
+  std::string parity_value = parity_str ? parity_str : "";
+  if (parity_str) {
+    env->ReleaseStringUTFChars(parity, parity_str);
+  }
+
+  return open_rig_with_path(rig_model, path, baud_rate, data_bits, stop_bits, parity_value);
 }
 
 extern "C" JNIEXPORT void JNICALL

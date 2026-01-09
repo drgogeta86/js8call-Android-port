@@ -4,6 +4,7 @@ import android.os.Bundle
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceFragmentCompat
+import com.js8call.core.BluetoothSerialPortCatalog
 import com.js8call.core.HamlibRigCatalog
 import com.js8call.core.UsbSerialPortCatalog
 import com.js8call.example.BuildConfig
@@ -47,61 +48,111 @@ class SettingsFragment : PreferenceFragmentCompat() {
 
         val rigUsbPortPref = findPreference<ListPreference>("rig_hamlib_usb_port")
         if (rigUsbPortPref != null) {
-            val ports = try {
+            val usbPorts = try {
                 UsbSerialPortCatalog.listPorts(requireContext())
+            } catch (_: Throwable) {
+                emptyList()
+            }
+            val btPorts = try {
+                BluetoothSerialPortCatalog.listPorts(requireContext())
             } catch (_: Throwable) {
                 emptyList()
             }
 
             val entries = ArrayList<String>()
             val values = ArrayList<String>()
-            if (ports.isEmpty()) {
+            if (usbPorts.isEmpty() && btPorts.isEmpty()) {
                 entries.add(getString(R.string.settings_hamlib_usb_port_none))
                 values.add("auto")
             } else {
                 entries.add(getString(R.string.settings_hamlib_usb_port_auto))
                 values.add("auto")
-                ports.forEach { port ->
+                usbPorts.forEach { port ->
+                    entries.add("USB ${port.label}")
+                    values.add("android-usb:${port.deviceId}:${port.portIndex}")
+                }
+                btPorts.forEach { port ->
                     entries.add(port.label)
-                    values.add("${port.deviceId}:${port.portIndex}")
+                    values.add("android-bt:${port.address}:${port.portIndex}")
                 }
             }
 
-            val currentValue = prefs?.getString("rig_hamlib_usb_port", "auto") ?: "auto"
-            if (currentValue == "auto") {
-                val deviceId = prefs?.getString("rig_usb_device_id", "")?.toIntOrNull()
-                val portIndex = prefs?.getString("rig_usb_port_index", "0")?.toIntOrNull() ?: 0
-                if (deviceId != null) {
-                    val candidate = "${deviceId}:${portIndex}"
-                    if (values.contains(candidate)) {
-                        rigUsbPortPref.value = candidate
-                    }
-                }
-            } else if (!values.contains(currentValue)) {
-                entries.add(getString(R.string.settings_hamlib_usb_port_previous, currentValue))
-                values.add(currentValue)
-                rigUsbPortPref.value = currentValue
+            val currentValueRaw = prefs?.getString("rig_hamlib_usb_port", "auto") ?: "auto"
+            val normalizedValue = normalizeSerialSelection(currentValueRaw, prefs, useLegacyFallback = true)
+            if (normalizedValue != currentValueRaw) {
+                prefs?.edit()?.putString("rig_hamlib_usb_port", normalizedValue)?.apply()
+            }
+
+            if (!values.contains(normalizedValue)) {
+                entries.add(getString(R.string.settings_hamlib_usb_port_previous, normalizedValue))
+                values.add(normalizedValue)
             }
 
             rigUsbPortPref.entries = entries.toTypedArray()
             rigUsbPortPref.entryValues = values.toTypedArray()
+            rigUsbPortPref.value = normalizedValue
 
-            val deviceIdPref = findPreference<EditTextPreference>("rig_usb_device_id")
-            val portIndexPref = findPreference<EditTextPreference>("rig_usb_port_index")
             rigUsbPortPref.setOnPreferenceChangeListener { _, newValue ->
-                val selection = newValue?.toString().orEmpty()
-                if (selection == "auto") {
-                    deviceIdPref?.text = ""
-                    portIndexPref?.text = "0"
-                } else {
-                    val parts = selection.split(':', limit = 2)
-                    if (parts.size == 2) {
-                        deviceIdPref?.text = parts[0]
-                        portIndexPref?.text = parts[1]
-                    }
-                }
+                val selection = normalizeSerialSelection(
+                    newValue?.toString().orEmpty(),
+                    prefs,
+                    useLegacyFallback = false
+                )
+                updateLegacyUsbPrefs(prefs, selection)
                 true
             }
         }
+    }
+
+    private fun normalizeSerialSelection(
+        selection: String,
+        prefs: android.content.SharedPreferences?,
+        useLegacyFallback: Boolean
+    ): String {
+        val trimmed = selection.trim()
+        if (trimmed.startsWith("android-usb:") || trimmed.startsWith("android-bt:")) {
+            return trimmed
+        }
+        if (trimmed.isEmpty() || trimmed == "auto") {
+            if (!useLegacyFallback) {
+                return "auto"
+            }
+            val deviceId = prefs?.getString("rig_usb_device_id", "")?.toIntOrNull()
+            val portIndex = prefs?.getString("rig_usb_port_index", "0")?.toIntOrNull() ?: 0
+            return if (deviceId != null) {
+                "android-usb:$deviceId:$portIndex"
+            } else {
+                "auto"
+            }
+        }
+        val parts = trimmed.split(':', limit = 2)
+        val deviceId = parts.firstOrNull()?.toIntOrNull()
+        return if (deviceId != null) {
+            val portIndex = parts.getOrNull(1)?.toIntOrNull() ?: 0
+            "android-usb:$deviceId:$portIndex"
+        } else {
+            trimmed
+        }
+    }
+
+    private fun updateLegacyUsbPrefs(
+        prefs: android.content.SharedPreferences?,
+        selection: String
+    ) {
+        val editor = prefs?.edit() ?: return
+        if (selection.startsWith("android-usb:")) {
+            val remainder = selection.removePrefix("android-usb:")
+            val parts = remainder.split(':', limit = 2)
+            val deviceId = parts.firstOrNull()?.toIntOrNull()
+            val portIndex = parts.getOrNull(1)?.toIntOrNull() ?: 0
+            if (deviceId != null) {
+                editor.putString("rig_usb_device_id", deviceId.toString())
+                editor.putString("rig_usb_port_index", portIndex.toString())
+            }
+        } else {
+            editor.putString("rig_usb_device_id", "")
+            editor.putString("rig_usb_port_index", "0")
+        }
+        editor.apply()
     }
 }

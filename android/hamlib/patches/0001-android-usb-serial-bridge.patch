@@ -13,18 +13,19 @@ index 766fd95b9..100530c1f 100644
  	mem.c settings.c parallel.c parallel.h usb_port.c usb_port.h debug.c \
 diff --git a/src/android_serial_bridge.c b/src/android_serial_bridge.c
 new file mode 100644
-index 000000000..dfced28c6
+index 000000000..000000000
 --- /dev/null
 +++ b/src/android_serial_bridge.c
-@@ -0,0 +1,347 @@
+@@ -0,0 +1,520 @@
 +/*
-+ * Android USB serial bridge hooks for Hamlib.
++ * Android serial bridge hooks for Hamlib.
 + */
 +
 +#ifdef __ANDROID__
 +
 +#include "android_serial_bridge.h"
 +
++#include <ctype.h>
 +#include <errno.h>
 +#include <fcntl.h>
 +#include <pthread.h>
@@ -52,6 +53,29 @@ index 000000000..dfced28c6
 +extern int js8_android_usb_serial_flush(void);
 +extern int js8_android_usb_serial_close(void);
 +
++extern int js8_android_bt_serial_is_ready(void);
++extern int js8_android_bt_serial_open(const char *address,
++                                      int port_index,
++                                      int baud_rate,
++                                      int data_bits,
++                                      int stop_bits,
++                                      int parity);
++extern int js8_android_bt_serial_read(unsigned char *buffer,
++                                      unsigned long length,
++                                      int timeout_ms);
++extern int js8_android_bt_serial_write(const unsigned char *buffer,
++                                       unsigned long length,
++                                       int timeout_ms);
++extern int js8_android_bt_serial_set_rts(int state);
++extern int js8_android_bt_serial_set_dtr(int state);
++extern int js8_android_bt_serial_flush(void);
++extern int js8_android_bt_serial_close(void);
++
++typedef enum android_serial_transport {
++    ANDROID_SERIAL_TRANSPORT_USB = 0,
++    ANDROID_SERIAL_TRANSPORT_BT = 1
++} android_serial_transport_t;
++
 +typedef struct android_serial_context {
 +    int fd_peer;
 +    int running;
@@ -60,6 +84,7 @@ index 000000000..dfced28c6
 +    pthread_t tx_thread;
 +    int rx_started;
 +    int tx_started;
++    android_serial_transport_t transport;
 +} android_serial_context_t;
 +
 +__attribute__((weak)) int initrots5_androidsensor(void)
@@ -67,7 +92,7 @@ index 000000000..dfced28c6
 +    return RIG_OK;
 +}
 +
-+static int parse_path(const char *pathname, int *device_id, int *port_index)
++static int parse_usb_path(const char *pathname, int *device_id, int *port_index)
 +{
 +    const char *prefix = "android-usb:";
 +    const size_t prefix_len = 12;
@@ -103,6 +128,68 @@ index 000000000..dfced28c6
 +    return 0;
 +}
 +
++static int parse_bt_path(const char *pathname,
++                         char *address,
++                         size_t address_len,
++                         int *port_index)
++{
++    const char *prefix = "android-bt:";
++    const size_t prefix_len = 11;
++    const char *cursor;
++    char *end = NULL;
++    long port = 0;
++    int i;
++
++    if (!pathname || strncmp(pathname, prefix, prefix_len) != 0) {
++        return -1;
++    }
++
++    cursor = pathname + prefix_len;
++    if (*cursor == '\0') {
++        return -1;
++    }
++
++    if (!address || address_len < 13) {
++        return -1;
++    }
++
++    for (i = 0; i < 12; i++) {
++        unsigned char ch = (unsigned char)cursor[i];
++        if (ch == '\0') {
++            return -1;
++        }
++        if (!isxdigit(ch)) {
++            return -1;
++        }
++        address[i] = (char)toupper(ch);
++    }
++    address[12] = '\0';
++    cursor += 12;
++
++    if (*cursor == '\0') {
++        *port_index = 0;
++        return 0;
++    }
++
++    if (*cursor != ':') {
++        return -1;
++    }
++
++    port = strtol(cursor + 1, &end, 0);
++    if (end == cursor + 1) {
++        return -1;
++    }
++    if (end && *end != '\0') {
++        return -1;
++    }
++    if (port < 0) {
++        return -1;
++    }
++
++    *port_index = (int)port;
++    return 0;
++}
++
 +static void drain_socket(int fd)
 +{
 +    char buffer[256];
@@ -126,7 +213,9 @@ index 000000000..dfced28c6
 +    int error_streak = 0;
 +
 +    while (ctx->running) {
-+        int read = js8_android_usb_serial_read(buffer, sizeof(buffer), ctx->timeout_ms);
++        int read = (ctx->transport == ANDROID_SERIAL_TRANSPORT_BT)
++                       ? js8_android_bt_serial_read(buffer, sizeof(buffer), ctx->timeout_ms)
++                       : js8_android_usb_serial_read(buffer, sizeof(buffer), ctx->timeout_ms);
 +        if (read > 0) {
 +            error_streak = 0;
 +            ssize_t written = 0;
@@ -145,8 +234,10 @@ index 000000000..dfced28c6
 +        } else {
 +            error_streak++;
 +            if (error_streak == 1 || (error_streak % 50) == 0) {
-+                rig_debug(RIG_DEBUG_WARN, "%s: android USB read failed (%d)\n",
-+                          __func__, error_streak);
++                const char *label =
++                    (ctx->transport == ANDROID_SERIAL_TRANSPORT_BT) ? "BT" : "USB";
++                rig_debug(RIG_DEBUG_WARN, "%s: android %s read failed (%d)\n",
++                          __func__, label, error_streak);
 +            }
 +            usleep(100000);
 +        }
@@ -166,8 +257,13 @@ index 000000000..dfced28c6
 +            ssize_t remaining = bytes_read;
 +            unsigned char *cursor = buffer;
 +            while (remaining > 0 && ctx->running) {
-+                int written = js8_android_usb_serial_write(cursor, (unsigned long)remaining,
-+                                                          ctx->timeout_ms);
++                int written = (ctx->transport == ANDROID_SERIAL_TRANSPORT_BT)
++                                  ? js8_android_bt_serial_write(cursor,
++                                                                (unsigned long)remaining,
++                                                                ctx->timeout_ms)
++                                  : js8_android_usb_serial_write(cursor,
++                                                                 (unsigned long)remaining,
++                                                                 ctx->timeout_ms);
 +                if (written > 0) {
 +                    remaining -= written;
 +                    cursor += written;
@@ -187,13 +283,43 @@ index 000000000..dfced28c6
 +    return NULL;
 +}
 +
++static android_serial_transport_t android_serial_get_transport(const hamlib_port_t *port)
++{
++    const android_serial_context_t *ctx;
++
++    if (!port) {
++        return ANDROID_SERIAL_TRANSPORT_USB;
++    }
++
++    ctx = (const android_serial_context_t *)port->handle;
++    if (ctx) {
++        return ctx->transport;
++    }
++
++    if (port->pathname && strncmp(port->pathname, "android-bt:", 11) == 0) {
++        return ANDROID_SERIAL_TRANSPORT_BT;
++    }
++
++    return ANDROID_SERIAL_TRANSPORT_USB;
++}
++
++static void android_serial_close_transport(android_serial_transport_t transport)
++{
++    if (transport == ANDROID_SERIAL_TRANSPORT_BT) {
++        js8_android_bt_serial_close();
++    } else {
++        js8_android_usb_serial_close();
++    }
++}
++
 +int android_serial_is_path(const char *pathname)
 +{
 +    if (!pathname) {
 +        return 0;
 +    }
 +
-+    return strncmp(pathname, "android-usb:", 12) == 0;
++    return strncmp(pathname, "android-usb:", 12) == 0 ||
++           strncmp(pathname, "android-bt:", 11) == 0;
 +}
 +
 +int android_serial_open(hamlib_port_t *port)
@@ -206,17 +332,26 @@ index 000000000..dfced28c6
 +    int data_bits = 8;
 +    int stop_bits = 1;
 +    int parity = 0;
++    char address[13] = {0};
++    android_serial_transport_t transport = ANDROID_SERIAL_TRANSPORT_USB;
 +
 +    if (!port) {
 +        return -RIG_EINVAL;
 +    }
 +
-+    if (!js8_android_usb_serial_is_ready()) {
-+        return -RIG_ENIMPL;
-+    }
-+
-+    if (parse_path(port->pathname, &device_id, &port_index) != 0) {
-+        rig_debug(RIG_DEBUG_ERR, "%s: invalid android-usb path %s\n", __func__, port->pathname);
++    if (parse_usb_path(port->pathname, &device_id, &port_index) == 0) {
++        transport = ANDROID_SERIAL_TRANSPORT_USB;
++        if (!js8_android_usb_serial_is_ready()) {
++            return -RIG_ENIMPL;
++        }
++    } else if (parse_bt_path(port->pathname, address, sizeof(address), &port_index) == 0) {
++        transport = ANDROID_SERIAL_TRANSPORT_BT;
++        if (!js8_android_bt_serial_is_ready()) {
++            return -RIG_ENIMPL;
++        }
++    } else {
++        rig_debug(RIG_DEBUG_ERR, "%s: invalid android serial path %s\n",
++                  __func__, port->pathname);
 +        return -RIG_EINVAL;
 +    }
 +
@@ -228,13 +363,22 @@ index 000000000..dfced28c6
 +        data_bits = 8;
 +    }
 +
-+    if (js8_android_usb_serial_open(device_id, port_index, baud_rate, data_bits, stop_bits, parity) != 0) {
-+        rig_debug(RIG_DEBUG_ERR, "%s: android USB open failed\n", __func__);
-+        return -RIG_EIO;
++    if (transport == ANDROID_SERIAL_TRANSPORT_USB) {
++        if (js8_android_usb_serial_open(device_id, port_index, baud_rate, data_bits,
++                                        stop_bits, parity) != 0) {
++            rig_debug(RIG_DEBUG_ERR, "%s: android USB open failed\n", __func__);
++            return -RIG_EIO;
++        }
++    } else {
++        if (js8_android_bt_serial_open(address, port_index, baud_rate, data_bits,
++                                       stop_bits, parity) == 0) {
++            rig_debug(RIG_DEBUG_ERR, "%s: android BT open failed\n", __func__);
++            return -RIG_EIO;
++        }
 +    }
 +
 +    if (socketpair(AF_UNIX, SOCK_STREAM, 0, fds) != 0) {
-+        js8_android_usb_serial_close();
++        android_serial_close_transport(transport);
 +        return -RIG_EIO;
 +    }
 +
@@ -245,13 +389,14 @@ index 000000000..dfced28c6
 +    if (!ctx) {
 +        close(fds[0]);
 +        close(fds[1]);
-+        js8_android_usb_serial_close();
++        android_serial_close_transport(transport);
 +        return -RIG_ENOMEM;
 +    }
 +
 +    ctx->fd_peer = fds[1];
 +    ctx->running = 1;
 +    ctx->timeout_ms = port->timeout > 0 ? port->timeout : 1000;
++    ctx->transport = transport;
 +
 +    port->fd = fds[0];
 +    port->handle = ctx;
@@ -263,7 +408,7 @@ index 000000000..dfced28c6
 +        free(ctx);
 +        port->fd = -1;
 +        port->handle = NULL;
-+        js8_android_usb_serial_close();
++        android_serial_close_transport(transport);
 +        return -RIG_EIO;
 +    }
 +    ctx->rx_started = 1;
@@ -279,7 +424,7 @@ index 000000000..dfced28c6
 +        free(ctx);
 +        port->fd = -1;
 +        port->handle = NULL;
-+        js8_android_usb_serial_close();
++        android_serial_close_transport(transport);
 +        return -RIG_EIO;
 +    }
 +    ctx->tx_started = 1;
@@ -307,7 +452,7 @@ index 000000000..dfced28c6
 +    }
 +
 +    ctx->running = 0;
-+    js8_android_usb_serial_close();
++    android_serial_close_transport(ctx->transport);
 +
 +    if (ctx->fd_peer >= 0) {
 +        shutdown(ctx->fd_peer, SHUT_RDWR);
@@ -339,6 +484,8 @@ index 000000000..dfced28c6
 +
 +int android_serial_flush(hamlib_port_t *port)
 +{
++    android_serial_transport_t transport;
++
 +    if (!port) {
 +        return -RIG_EINVAL;
 +    }
@@ -347,31 +494,57 @@ index 000000000..dfced28c6
 +        drain_socket(port->fd);
 +    }
 +
-+    (void)js8_android_usb_serial_flush();
++    transport = android_serial_get_transport(port);
++    if (transport == ANDROID_SERIAL_TRANSPORT_BT) {
++        (void)js8_android_bt_serial_flush();
++    } else {
++        (void)js8_android_usb_serial_flush();
++    }
++
 +    return RIG_OK;
 +}
 +
 +int android_serial_set_rts(hamlib_port_t *port, int state)
 +{
-+    (void)port;
++    android_serial_transport_t transport;
++
++    if (!port) {
++        return -RIG_EINVAL;
++    }
++
++    transport = android_serial_get_transport(port);
++    if (transport == ANDROID_SERIAL_TRANSPORT_BT) {
++        return js8_android_bt_serial_set_rts(state) == 0 ? RIG_OK : -RIG_EIO;
++    }
++
 +    return js8_android_usb_serial_set_rts(state) == 0 ? RIG_OK : -RIG_EIO;
 +}
 +
 +int android_serial_set_dtr(hamlib_port_t *port, int state)
 +{
-+    (void)port;
++    android_serial_transport_t transport;
++
++    if (!port) {
++        return -RIG_EINVAL;
++    }
++
++    transport = android_serial_get_transport(port);
++    if (transport == ANDROID_SERIAL_TRANSPORT_BT) {
++        return js8_android_bt_serial_set_dtr(state) == 0 ? RIG_OK : -RIG_EIO;
++    }
++
 +    return js8_android_usb_serial_set_dtr(state) == 0 ? RIG_OK : -RIG_EIO;
 +}
 +
 +#endif  /* __ANDROID__ */
 diff --git a/src/android_serial_bridge.h b/src/android_serial_bridge.h
 new file mode 100644
-index 000000000..1f847c058
+index 000000000..000000000
 --- /dev/null
 +++ b/src/android_serial_bridge.h
 @@ -0,0 +1,34 @@
 +/*
-+ * Android USB serial bridge hooks for Hamlib.
++ * Android serial bridge hooks for Hamlib.
 + *
 + * These functions are intended to be implemented by the host application
 + * (e.g., via JNI). The default implementation returns -RIG_ENIMPL.
@@ -558,3 +731,19 @@ index 71d3c68c8..70168ef4a 100644
  #if defined(TIOCMBIS) && defined(TIOCMBIC)
      rc = IOCTL(p->fd, state ? TIOCMBIS : TIOCMBIC, &y);
  #else
+diff --git a/src/misc.c b/src/misc.c
+index f7b0e8f6d..273c14112 100644
+--- a/src/misc.c
++++ b/src/misc.c
+@@ -2142,6 +2142,11 @@ int HAMLIB_API parse_hoststr(char *hoststr, int hoststr_len, char host[256],
+     // Handle device names 1st
+     if (strstr(hoststr, "/dev")) { return -RIG_EINVAL; }
+ 
++    if (strncasecmp(hoststr, "android-usb:", 12) == 0 ||
++        strncasecmp(hoststr, "android-bt:", 11) == 0) {
++        return -RIG_EINVAL;
++    }
++
+     if (strstr(hoststr, "/")) { return -RIG_EINVAL; } // probably a path so not a hoststr
+ 
+     if (strncasecmp(hoststr, "com", 3) == 0) { return -RIG_EINVAL; }

@@ -41,6 +41,31 @@ class HamlibRigControl {
     }
 
     @Synchronized
+    fun openSerialPath(
+        rigModel: Int,
+        serialPath: String,
+        baudRate: Int,
+        dataBits: Int,
+        stopBits: Int,
+        parity: String
+    ): Boolean {
+        close()
+        val nativeHandle = nativeOpenWithPath(
+            rigModel,
+            serialPath,
+            baudRate,
+            dataBits,
+            stopBits,
+            parity
+        )
+        if (nativeHandle == 0L) {
+            return false
+        }
+        handle = nativeHandle
+        return true
+    }
+
+    @Synchronized
     fun close() {
         val active = handle
         if (active != 0L) {
@@ -73,6 +98,14 @@ class HamlibRigControl {
         rigModel: Int,
         deviceId: Int,
         portIndex: Int,
+        baudRate: Int,
+        dataBits: Int,
+        stopBits: Int,
+        parity: String
+    ): Long
+    private external fun nativeOpenWithPath(
+        rigModel: Int,
+        serialPath: String,
         baudRate: Int,
         dataBits: Int,
         stopBits: Int,

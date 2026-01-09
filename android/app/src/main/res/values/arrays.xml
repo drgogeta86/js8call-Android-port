@@ -4,7 +4,7 @@
     <string-array name="rig_type_entries">
         <item>None</item>
         <item>Network (rigctld/FlRig)</item>
-        <item>USB (Hamlib)</item>
+        <item>Serial (Hamlib)</item>
     </string-array>
     <string-array name="rig_type_values">
         <item>none</item>

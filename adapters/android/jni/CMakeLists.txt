@@ -9,6 +9,7 @@ set(CMAKE_CXX_EXTENSIONS OFF)
 
 # Create the JNI library
 add_library(js8core-jni SHARED
+  bluetooth_serial_bridge_jni.cpp
   hamlib_rig_control_jni.cpp
   js8_engine_jni.cpp
   js8_jni_methods.cpp

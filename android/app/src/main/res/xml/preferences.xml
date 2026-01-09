@@ -114,22 +114,6 @@
                 app:iconSpaceReserved="false" />
 
             <EditTextPreference
-                app:key="rig_usb_device_id"
-                app:title="@string/settings_hamlib_usb_device_id"
-                app:summary="@string/settings_hamlib_usb_device_id_summary"
-                app:defaultValue=""
-                app:useSimpleSummaryProvider="true"
-                app:iconSpaceReserved="false" />
-
-            <EditTextPreference
-                app:key="rig_usb_port_index"
-                app:title="@string/settings_hamlib_usb_port_index"
-                app:summary="@string/settings_hamlib_usb_port_index_summary"
-                app:defaultValue="0"
-                app:useSimpleSummaryProvider="true"
-                app:iconSpaceReserved="false" />
-
-            <EditTextPreference
                 app:key="rig_serial_baud"
                 app:title="@string/settings_hamlib_baud_rate"
                 app:summary="@string/settings_hamlib_baud_rate_summary"

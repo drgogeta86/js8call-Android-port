@@ -19,6 +19,8 @@ import android.util.Log
 import androidx.core.app.NotificationCompat
 import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import androidx.preference.PreferenceManager
+import com.js8call.core.BluetoothSerialBridge
+import com.js8call.core.BluetoothSerialPortCatalog
 import com.js8call.core.HamlibRigControl
 import com.js8call.core.JS8AudioHelper
 import com.js8call.core.JS8Engine
@@ -45,6 +47,7 @@ class JS8EngineService : Service() {
     private var hamlibRigControl: HamlibRigControl? = null
     private var hamlibRigConnected: Boolean = false
     private var usbSerialBridge: UsbSerialBridge? = null
+    private var bluetoothSerialBridge: BluetoothSerialBridge? = null
     private val mainHandler = Handler(Looper.getMainLooper())
     private val txMonitorHandler = Handler(Looper.getMainLooper())
     private var selectedAudioDeviceId: Int = -1  // -1 means use default
@@ -118,6 +121,7 @@ class JS8EngineService : Service() {
         super.onCreate()
         createNotificationChannel()
         usbSerialBridge = UsbSerialBridge(applicationContext)
+        bluetoothSerialBridge = BluetoothSerialBridge(applicationContext)
         hamlibRigControl = HamlibRigControl()
         Log.i(TAG, "Service created")
     }
@@ -221,6 +225,8 @@ class JS8EngineService : Service() {
 
     private fun startEngine() {
         try {
+            initializeRigControl()
+
             // Create callback handler that marshals to main thread
             val callbackHandler = object : JS8Engine.CallbackHandler {
                 override fun onDecoded(
@@ -378,36 +384,54 @@ class JS8EngineService : Service() {
     }
 
     private fun initializeHamlibUsbControl() {
-        Log.i(TAG, "Initializing USB rig control (Hamlib)")
+        Log.i(TAG, "Initializing serial rig control (Hamlib)")
         hamlibRigConnected = false
 
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         val rigModelStr = prefs.getString("rig_hamlib_model", "0")?.trim().orEmpty()
         val selectedPort = prefs.getString("rig_hamlib_usb_port", "auto")?.trim().orEmpty()
-        var deviceIdStr = prefs.getString("rig_usb_device_id", "")?.trim().orEmpty()
-        var portIndexStr = prefs.getString("rig_usb_port_index", "0")?.trim().orEmpty()
-
-        if (selectedPort.isNotEmpty() && selectedPort != "auto") {
-            val parts = selectedPort.split(':', limit = 2)
-            if (parts.size == 2) {
-                deviceIdStr = parts[0]
-                portIndexStr = parts[1]
-            }
-        }
 
         val rigModel = rigModelStr.toIntOrNull() ?: 0
         Log.i(TAG, "Hamlib rig model selected: $rigModel")
         if (rigModel <= 0) {
             Log.w(TAG, "Hamlib rig model not selected")
-            broadcastError("Select a Hamlib rig model before enabling USB control.")
+            broadcastError("Select a Hamlib rig model before enabling serial control.")
             rigCtlErrorShown = true
             return
         }
 
+        val selection = resolveSerialSelection(selectedPort, prefs)
+        if (selection == null) {
+            Log.w(TAG, "Invalid serial port selection: $selectedPort")
+            broadcastError("Invalid serial port selection for Hamlib control.")
+            rigCtlErrorShown = true
+            return
+        }
+
+        when (selection.transport) {
+            SerialTransport.USB -> openHamlibSerialUsb(rigModel, selection)
+            SerialTransport.BLUETOOTH -> openHamlibSerialBluetooth(rigModel, selection)
+        }
+    }
+
+    private fun openHamlibSerialUsb(rigModel: Int, selection: SerialSelection) {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val baudRate = prefs.getString("rig_serial_baud", "9600")?.toIntOrNull() ?: 9600
+        val dataBits = prefs.getString("rig_serial_data_bits", "8")?.toIntOrNull() ?: 8
+        val stopBits = prefs.getString("rig_serial_stop_bits", "1")?.toIntOrNull() ?: 1
+        val parity = prefs.getString("rig_serial_parity", "none") ?: "none"
+        val parityValue = when (parity.lowercase(Locale.US)) {
+            "odd" -> 1
+            "even" -> 2
+            "mark" -> 3
+            "space" -> 4
+            else -> 0
+        }
+
         usbSerialBridge?.registerNative()
 
-        var deviceId = deviceIdStr.toIntOrNull()
-        var portIndex = portIndexStr.toIntOrNull() ?: 0
+        var deviceId = selection.usbDeviceId
+        var portIndex = selection.portIndex
         if (deviceId == null) {
             val ports = try {
                 UsbSerialPortCatalog.listPorts(this)
@@ -429,6 +453,26 @@ class JS8EngineService : Service() {
         }
 
         if (usbDevice == null) {
+            if (selection.path == "auto") {
+                val btPorts = try {
+                    BluetoothSerialPortCatalog.listPorts(this)
+                } catch (_: Throwable) {
+                    emptyList()
+                }
+                val btPort = btPorts.firstOrNull()
+                if (btPort != null) {
+                    val btSelection = SerialSelection(
+                        transport = SerialTransport.BLUETOOTH,
+                        path = "android-bt:${btPort.address}:${btPort.portIndex}",
+                        usbDeviceId = null,
+                        btAddress = btPort.address,
+                        portIndex = btPort.portIndex
+                    )
+                    Log.i(TAG, "Auto-selected Bluetooth serial port: ${btPort.label}")
+                    openHamlibSerialBluetooth(rigModel, btSelection)
+                    return
+                }
+            }
             Log.w(TAG, "No USB serial device found for Hamlib")
             broadcastError("No USB serial device found for Hamlib control.")
             rigCtlErrorShown = true
@@ -442,7 +486,8 @@ class JS8EngineService : Service() {
             UsbPermissionHelper.requestPermission(this, usbDevice) { granted ->
                 if (granted) {
                     Log.i(TAG, "USB permission granted for Hamlib device")
-                    openHamlibRig(rigModel, usbDevice.deviceId, portIndex)
+                    openHamlibSerialUsbInternal(rigModel, usbDevice.deviceId, portIndex, baudRate,
+                        dataBits, stopBits, parity, parityValue)
                 } else {
                     Log.w(TAG, "USB permission denied for Hamlib device")
                     broadcastError("USB permission denied. Please grant USB access in Settings.")
@@ -451,24 +496,21 @@ class JS8EngineService : Service() {
             }
         } else {
             Log.i(TAG, "USB permission already granted for Hamlib device")
-            openHamlibRig(rigModel, usbDevice.deviceId, portIndex)
+            openHamlibSerialUsbInternal(rigModel, usbDevice.deviceId, portIndex, baudRate,
+                dataBits, stopBits, parity, parityValue)
         }
     }
 
-    private fun openHamlibRig(rigModel: Int, deviceId: Int, portIndex: Int) {
-        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
-        val baudRate = prefs.getString("rig_serial_baud", "9600")?.toIntOrNull() ?: 9600
-        val dataBits = prefs.getString("rig_serial_data_bits", "8")?.toIntOrNull() ?: 8
-        val stopBits = prefs.getString("rig_serial_stop_bits", "1")?.toIntOrNull() ?: 1
-        val parity = prefs.getString("rig_serial_parity", "none") ?: "none"
-        val parityValue = when (parity.lowercase(Locale.US)) {
-            "odd" -> 1
-            "even" -> 2
-            "mark" -> 3
-            "space" -> 4
-            else -> 0
-        }
-
+    private fun openHamlibSerialUsbInternal(
+        rigModel: Int,
+        deviceId: Int,
+        portIndex: Int,
+        baudRate: Int,
+        dataBits: Int,
+        stopBits: Int,
+        parity: String,
+        parityValue: Int
+    ) {
         Thread {
             val preopenOk = usbSerialBridge?.open(
                 deviceId,
@@ -490,11 +532,11 @@ class JS8EngineService : Service() {
             }
 
             val resolvedPortIndex = usbSerialBridge?.getActivePortIndex() ?: portIndex
+            val serialPath = "android-usb:$deviceId:$resolvedPortIndex"
 
-            val ok = hamlibRigControl?.open(
+            val ok = hamlibRigControl?.openSerialPath(
                 rigModel,
-                deviceId,
-                resolvedPortIndex,
+                serialPath,
                 baudRate,
                 dataBits,
                 stopBits,
@@ -505,7 +547,7 @@ class JS8EngineService : Service() {
                 hamlibRigConnected = ok
                 rigCtlErrorShown = false
                 if (ok) {
-                    Log.i(TAG, "Hamlib rig opened (model=$rigModel device=$deviceId port=$resolvedPortIndex)")
+                    Log.i(TAG, "Hamlib rig opened (model=$rigModel path=$serialPath)")
                 } else {
                     val detail = hamlibRigControl?.getLastError().orEmpty()
                     if (detail.isNotBlank()) {
@@ -513,13 +555,183 @@ class JS8EngineService : Service() {
                         broadcastError("Failed to open Hamlib rig: $detail")
                     } else {
                         Log.w(TAG, "Hamlib rig open failed")
-                        broadcastError("Failed to open Hamlib rig. Check USB connection and settings.")
+                        broadcastError("Failed to open Hamlib rig. Check serial connection and settings.")
                     }
                     rigCtlErrorShown = true
                 }
             }
         }.start()
     }
+
+    private fun openHamlibSerialBluetooth(rigModel: Int, selection: SerialSelection) {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val baudRate = prefs.getString("rig_serial_baud", "9600")?.toIntOrNull() ?: 9600
+        val dataBits = prefs.getString("rig_serial_data_bits", "8")?.toIntOrNull() ?: 8
+        val stopBits = prefs.getString("rig_serial_stop_bits", "1")?.toIntOrNull() ?: 1
+        val parity = prefs.getString("rig_serial_parity", "none") ?: "none"
+        val parityValue = when (parity.lowercase(Locale.US)) {
+            "odd" -> 1
+            "even" -> 2
+            "mark" -> 3
+            "space" -> 4
+            else -> 0
+        }
+
+        bluetoothSerialBridge?.registerNative()
+
+        val address = selection.btAddress
+        if (address == null) {
+            Log.w(TAG, "Bluetooth address missing for Hamlib")
+            broadcastError("No Bluetooth serial device selected for Hamlib control.")
+            rigCtlErrorShown = true
+            return
+        }
+
+        if (BluetoothSerialPortCatalog.findBondedDevice(this, address) == null) {
+            Log.w(TAG, "Bluetooth device not paired or unavailable: $address")
+            broadcastError("Bluetooth serial device not available. Check pairing and settings.")
+            rigCtlErrorShown = true
+            return
+        }
+
+        Thread {
+            val preopenOk = bluetoothSerialBridge?.open(
+                address,
+                selection.portIndex,
+                baudRate,
+                dataBits,
+                stopBits,
+                parityValue
+            ) == true
+
+            if (!preopenOk) {
+                val detail = bluetoothSerialBridge?.getLastError().orEmpty()
+                mainHandler.post {
+                    hamlibRigConnected = false
+                    rigCtlErrorShown = true
+                    if (detail.isNotBlank()) {
+                        Log.w(TAG, "Hamlib Bluetooth pre-open failed for addr=$address port=${selection.portIndex}: $detail")
+                        broadcastError("Failed to open Bluetooth serial port for Hamlib control: $detail")
+                    } else {
+                        Log.w(TAG, "Hamlib Bluetooth pre-open failed for addr=$address port=${selection.portIndex}")
+                        broadcastError("Failed to open Bluetooth serial port for Hamlib control.")
+                    }
+                }
+                return@Thread
+            }
+
+            Log.i(TAG, "Hamlib Bluetooth pre-open ok for addr=$address port=${selection.portIndex}")
+            val serialPath = selection.path
+            Log.i(TAG, "Hamlib opening Bluetooth rig via path=$serialPath")
+            val ok = hamlibRigControl?.openSerialPath(
+                rigModel,
+                serialPath,
+                baudRate,
+                dataBits,
+                stopBits,
+                parity
+            ) == true
+
+            mainHandler.post {
+                hamlibRigConnected = ok
+                rigCtlErrorShown = false
+                if (ok) {
+                    Log.i(TAG, "Hamlib rig opened (model=$rigModel path=$serialPath)")
+                } else {
+                    val detail = hamlibRigControl?.getLastError().orEmpty()
+                    if (detail.isNotBlank()) {
+                        Log.w(TAG, "Hamlib rig open failed: $detail")
+                        broadcastError("Failed to open Hamlib rig: $detail")
+                    } else {
+                        Log.w(TAG, "Hamlib rig open failed")
+                        broadcastError("Failed to open Hamlib rig. Check serial connection and settings.")
+                    }
+                    rigCtlErrorShown = true
+                }
+            }
+        }.start()
+    }
+
+    private fun resolveSerialSelection(
+        selection: String,
+        prefs: android.content.SharedPreferences
+    ): SerialSelection? {
+        val trimmed = selection.trim()
+        if (trimmed.startsWith("android-bt:")) {
+            val remainder = trimmed.removePrefix("android-bt:")
+            val parts = remainder.split(':', limit = 2)
+            val address = BluetoothSerialPortCatalog.normalizeAddress(parts.firstOrNull().orEmpty())
+                ?: return null
+            val portIndex = parts.getOrNull(1)?.toIntOrNull() ?: 0
+            return SerialSelection(
+                transport = SerialTransport.BLUETOOTH,
+                path = "android-bt:$address:$portIndex",
+                usbDeviceId = null,
+                btAddress = address,
+                portIndex = portIndex
+            )
+        }
+
+        if (trimmed.startsWith("android-usb:")) {
+            val remainder = trimmed.removePrefix("android-usb:")
+            val parts = remainder.split(':', limit = 2)
+            val deviceId = parts.firstOrNull()?.toIntOrNull() ?: return null
+            val portIndex = parts.getOrNull(1)?.toIntOrNull() ?: 0
+            return SerialSelection(
+                transport = SerialTransport.USB,
+                path = "android-usb:$deviceId:$portIndex",
+                usbDeviceId = deviceId,
+                btAddress = null,
+                portIndex = portIndex
+            )
+        }
+
+        if (trimmed.isNotEmpty() && trimmed != "auto") {
+            val parts = trimmed.split(':', limit = 2)
+            val deviceId = parts.firstOrNull()?.toIntOrNull() ?: return null
+            val portIndex = parts.getOrNull(1)?.toIntOrNull() ?: 0
+            return SerialSelection(
+                transport = SerialTransport.USB,
+                path = "android-usb:$deviceId:$portIndex",
+                usbDeviceId = deviceId,
+                btAddress = null,
+                portIndex = portIndex
+            )
+        }
+
+        val deviceId = prefs.getString("rig_usb_device_id", "")?.toIntOrNull()
+        val portIndex = prefs.getString("rig_usb_port_index", "0")?.toIntOrNull() ?: 0
+        return if (deviceId != null) {
+            SerialSelection(
+                transport = SerialTransport.USB,
+                path = "android-usb:$deviceId:$portIndex",
+                usbDeviceId = deviceId,
+                btAddress = null,
+                portIndex = portIndex
+            )
+        } else {
+            SerialSelection(
+                transport = SerialTransport.USB,
+                path = "auto",
+                usbDeviceId = null,
+                btAddress = null,
+                portIndex = 0
+            )
+        }
+    }
+
+    private enum class SerialTransport {
+        USB,
+        BLUETOOTH
+    }
+
+    private data class SerialSelection(
+        val transport: SerialTransport,
+        val path: String,
+        val usbDeviceId: Int?,
+        val btAddress: String?,
+        val portIndex: Int
+    )
 
     private fun stopEngine() {
         try {
@@ -540,6 +752,8 @@ class JS8EngineService : Service() {
             rigControlMode = "none"
             hamlibRigControl?.close()
             usbSerialBridge?.unregisterNative()
+            bluetoothSerialBridge?.close()
+            bluetoothSerialBridge?.unregisterNative()
 
             if (networkClientToDisconnect != null) {
                 Thread {
