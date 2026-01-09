@@ -49,6 +49,7 @@ class TransmitFragment : Fragment() {
     private var defaultSendButtonTint: ColorStateList? = null
     private var modeOptions: List<ModeOption> = emptyList()
     private lateinit var queueAdapter: TransmitQueueAdapter
+    private var currentTxOffset: Float = 1500f
 
     private val preferenceListener =
         SharedPreferences.OnSharedPreferenceChangeListener { _, key ->
@@ -257,14 +258,15 @@ class TransmitFragment : Fragment() {
             }
         }
 
+        viewModel.txOffsetHz.observe(viewLifecycleOwner) { offset ->
+            currentTxOffset = offset
+            updateTxStatusText(viewModel.txState.value)
+        }
+
         // Observe TX state
         viewModel.txState.observe(viewLifecycleOwner) { state ->
             val safeState = state ?: TransmitState.IDLE
-            txStatusText.text = when (safeState) {
-                TransmitState.IDLE -> getString(R.string.tx_status_idle)
-                TransmitState.QUEUED -> getString(R.string.tx_status_queued)
-                TransmitState.TRANSMITTING -> getString(R.string.tx_status_transmitting)
-            }
+            updateTxStatusText(safeState)
             updateSendButtonTint(safeState)
         }
 
@@ -284,6 +286,15 @@ class TransmitFragment : Fragment() {
     private fun updateSendButtonState() {
         val hasText = messageEditText.text?.isNotBlank() == true
         sendButton.isEnabled = selectedMode != TxMode.FREE_TEXT || hasText
+    }
+
+    private fun updateTxStatusText(state: TransmitState?) {
+        val safeState = state ?: TransmitState.IDLE
+        txStatusText.text = when (safeState) {
+            TransmitState.IDLE -> "Ready to transmit at ${currentTxOffset.toInt()} Hz"
+            TransmitState.QUEUED -> getString(R.string.tx_status_queued)
+            TransmitState.TRANSMITTING -> getString(R.string.tx_status_transmitting)
+        }
     }
 
     private fun updateSendButtonTint(state: TransmitState) {
@@ -331,6 +342,7 @@ class TransmitFragment : Fragment() {
             action = JS8EngineService.ACTION_TRANSMIT_MESSAGE
             putExtra(JS8EngineService.EXTRA_TX_TEXT, payloadText)
             putExtra(JS8EngineService.EXTRA_TX_SUBMODE, selectedSubmode)
+            putExtra(JS8EngineService.EXTRA_TX_FREQ_HZ, currentTxOffset.toDouble())
             if (directed != null) {
                 putExtra(JS8EngineService.EXTRA_TX_DIRECTED, directed)
             }

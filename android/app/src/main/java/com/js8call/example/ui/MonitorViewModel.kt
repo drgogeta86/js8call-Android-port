@@ -23,6 +23,9 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _isRunning = MutableLiveData<Boolean>(false)
     val isRunning: LiveData<Boolean> = _isRunning
 
+    private val _txOffsetHz = MutableLiveData<Float>(1500f)
+    val txOffsetHz: LiveData<Float> = _txOffsetHz
+
     init {
         _status.value = MonitorStatus(state = EngineState.STOPPED)
     }
@@ -87,6 +90,21 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
      */
     fun updateAudioDevice(deviceName: String) {
         _status.value = _status.value?.copy(audioDevice = deviceName)
+    }
+
+    /**
+     * Set the TX offset frequency in Hz.
+     */
+    fun setTxOffset(offsetHz: Float) {
+        _txOffsetHz.value = offsetHz
+        _status.value = _status.value?.copy(txOffsetHz = offsetHz)
+    }
+
+    /**
+     * Get the current TX offset frequency in Hz.
+     */
+    fun getTxOffset(): Float {
+        return _txOffsetHz.value ?: 1500f
     }
 
     /**

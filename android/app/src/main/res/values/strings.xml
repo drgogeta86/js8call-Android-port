@@ -20,6 +20,7 @@
     <string name="monitor_bandwidth">Bandwidth</string>
     <string name="monitor_snr">SNR</string>
     <string name="monitor_power">Power</string>
+    <string name="monitor_tx_offset">TX Offset</string>
     <string name="monitor_audio_device">Audio Device</string>
     <string name="monitor_radio_frequency">Radio Frequency</string>
 

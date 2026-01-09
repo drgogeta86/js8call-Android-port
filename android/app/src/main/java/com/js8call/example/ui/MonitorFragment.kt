@@ -34,11 +34,13 @@ import com.js8call.example.service.JS8EngineService
 class MonitorFragment : Fragment() {
 
     private lateinit var viewModel: MonitorViewModel
+    private lateinit var transmitViewModel: TransmitViewModel
 
     private lateinit var waterfallView: WaterfallView
     private lateinit var statusText: TextView
     private lateinit var snrValue: TextView
     private lateinit var powerValue: TextView
+    private lateinit var txOffsetValue: TextView
     private lateinit var audioDeviceSpinner: Spinner
     private lateinit var frequencySpinner: Spinner
     private lateinit var startStopButton: Button
@@ -107,15 +109,31 @@ class MonitorFragment : Fragment() {
 
         // Initialize ViewModels
         viewModel = ViewModelProvider(this)[MonitorViewModel::class.java]
+        transmitViewModel = ViewModelProvider(requireActivity())[TransmitViewModel::class.java]
 
         // Find views
         waterfallView = view.findViewById(R.id.waterfall_view)
         statusText = view.findViewById(R.id.status_text)
         snrValue = view.findViewById(R.id.snr_value)
         powerValue = view.findViewById(R.id.power_value)
+        txOffsetValue = view.findViewById(R.id.tx_offset_value)
         audioDeviceSpinner = view.findViewById(R.id.audio_device_spinner)
         frequencySpinner = view.findViewById(R.id.frequency_spinner)
         startStopButton = view.findViewById(R.id.start_stop_button)
+
+        // Set up waterfall offset callback
+        waterfallView.onOffsetChanged = { offsetHz ->
+            viewModel.setTxOffset(offsetHz)
+            transmitViewModel.setTxOffset(offsetHz)
+            waterfallView.txOffsetHz = offsetHz
+
+            // Broadcast offset to service for autoreplies
+            val intent = Intent(requireContext(), JS8EngineService::class.java).apply {
+                action = JS8EngineService.ACTION_SET_TX_OFFSET
+                putExtra(JS8EngineService.EXTRA_TX_OFFSET_HZ, offsetHz)
+            }
+            requireContext().startService(intent)
+        }
 
         // Set up audio device spinner
         setupAudioDeviceSpinner()
@@ -195,6 +213,9 @@ class MonitorFragment : Fragment() {
             } else {
                 "--"
             }
+
+            // Update TX offset
+            txOffsetValue.text = "${status.txOffsetHz.toInt()} Hz"
 
             // Show error if present
             status.errorMessage?.let { error ->

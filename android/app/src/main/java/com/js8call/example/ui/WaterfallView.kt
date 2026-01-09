@@ -27,6 +27,10 @@ class WaterfallView @JvmOverloads constructor(
     private var waterfallCanvas: Canvas? = null
     private var tempBitmap: Bitmap? = null  // For double-buffering during scroll
     private val paint = Paint(Paint.ANTI_ALIAS_FLAG)
+    private val markerPaint = Paint(Paint.ANTI_ALIAS_FLAG).apply {
+        color = Color.argb(180, 255, 0, 0)
+        style = Paint.Style.FILL
+    }
     private val srcRect = Rect()
     private val dstRect = Rect()
 
@@ -35,6 +39,19 @@ class WaterfallView @JvmOverloads constructor(
     private var zero = 0        // Zero offset control (typically 0-100)
     private var bpp = 1         // Bits per pixel (usually 1 for real-time)
     private var avg = 1         // Averaging factor
+
+    // TX offset tracking
+    var txOffsetHz: Float = 1500f
+        set(value) {
+            field = value.coerceAtLeast(500f)
+            postInvalidate()
+        }
+    private var currentBinHz: Float = 0f
+    private var displayStartBin: Int = 0
+    private var displayEndBin: Int = -1
+
+    // Callback for offset changes
+    var onOffsetChanged: ((Float) -> Unit)? = null
 
     // Drawing rate control (faster than JS8Call for smoother mobile display)
     private val drawHandler = Handler(Looper.getMainLooper())
@@ -58,6 +75,7 @@ class WaterfallView @JvmOverloads constructor(
     private val colorPalette = IntArray(256)
 
     init {
+        isClickable = true
         // Initialize color palette matching JS8Call
         initColorPalette()
     }
@@ -168,6 +186,9 @@ class WaterfallView @JvmOverloads constructor(
     fun updateSpectrum(bins: FloatArray, binHz: Float, powerDb: Float) {
         if (bins.isEmpty()) return
 
+        // Store binHz for offset calculations
+        currentBinHz = binHz
+
         // Store the latest spectrum data (will be drawn at next timer tick)
         pendingSpectrum = bins.copyOf()
 
@@ -237,6 +258,8 @@ class WaterfallView @JvmOverloads constructor(
         // Step 3: Draw new spectrum line at the top (y=0)
         // Only draw from startBin to endBin (skip DC offset or bad data)
         val actualEndBin = if (endBin > 0) endBin else bins.size
+        displayStartBin = startBin
+        displayEndBin = actualEndBin
         val usableBins = actualEndBin - startBin
         val pixelsPerBin = width.toFloat() / usableBins
 
@@ -390,6 +413,55 @@ class WaterfallView @JvmOverloads constructor(
         srcRect.set(0, 0, bitmap.width, bitmap.height)
         dstRect.set(0, 0, width, height)
         canvas.drawBitmap(bitmap, srcRect, dstRect, paint)
+
+        // Draw TX offset marker bar (50Hz bandwidth for normal mode)
+        if (currentBinHz > 0 && displayEndBin > displayStartBin) {
+            val usableBins = displayEndBin - displayStartBin
+            val binIndex = (txOffsetHz / currentBinHz).toInt()
+            val displayBinIndex = binIndex - displayStartBin
+
+            if (displayBinIndex in 0 until usableBins) {
+                val pixelsPerBin = width.toFloat() / usableBins
+                val xPosition = displayBinIndex * pixelsPerBin
+
+                // Calculate bar width for 50Hz filter bandwidth (25Hz on each side)
+                val bandwidthBins = 50f / currentBinHz
+                val barWidth = bandwidthBins * pixelsPerBin
+
+                // Draw vertical bar marker centered on offset
+                canvas.drawRect(
+                    xPosition - barWidth / 2f,
+                    0f,
+                    xPosition + barWidth / 2f,
+                    height.toFloat(),
+                    markerPaint
+                )
+            }
+        }
+    }
+
+    override fun onTouchEvent(event: android.view.MotionEvent): Boolean {
+        when (event.action) {
+            android.view.MotionEvent.ACTION_DOWN -> {
+                return true
+            }
+            android.view.MotionEvent.ACTION_UP -> {
+                if (currentBinHz > 0 && displayEndBin > displayStartBin) {
+                    val usableBins = displayEndBin - displayStartBin
+                    val pixelsPerBin = width.toFloat() / usableBins
+                    val xPosition = event.x.coerceIn(0f, width.toFloat())
+                    val binIndex = (xPosition / pixelsPerBin).toInt()
+                    val actualBinIndex = binIndex + displayStartBin
+                    val newOffsetHz = actualBinIndex * currentBinHz
+
+                    txOffsetHz = newOffsetHz
+                    onOffsetChanged?.invoke(txOffsetHz)
+                    android.util.Log.d("WaterfallView", "TX offset set to $txOffsetHz Hz at x=$xPosition (bin=$actualBinIndex)")
+                }
+                return true
+            }
+        }
+        return super.onTouchEvent(event)
     }
 
     override fun onDetachedFromWindow() {

@@ -25,6 +25,9 @@ class TransmitViewModel(application: Application) : AndroidViewModel(application
     private val _directedTo = MutableLiveData<String>("")
     val directedTo: LiveData<String> = _directedTo
 
+    private val _txOffsetHz = MutableLiveData<Float>(1500f)
+    val txOffsetHz: LiveData<Float> = _txOffsetHz
+
     private val txQueue = mutableListOf<TransmitMessage>()
 
     /**
@@ -61,6 +64,20 @@ class TransmitViewModel(application: Application) : AndroidViewModel(application
      */
     fun setDirectedTo(callsign: String) {
         _directedTo.value = callsign.uppercase()
+    }
+
+    /**
+     * Set the TX offset frequency in Hz.
+     */
+    fun setTxOffset(offsetHz: Float) {
+        _txOffsetHz.value = offsetHz
+    }
+
+    /**
+     * Get the current TX offset frequency in Hz.
+     */
+    fun getTxOffset(): Float {
+        return _txOffsetHz.value ?: 1500f
     }
 
     /**

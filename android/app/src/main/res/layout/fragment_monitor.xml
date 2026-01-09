@@ -50,7 +50,7 @@
                 android:layout_height="wrap_content"
                 android:layout_marginTop="8dp"
                 android:columnCount="2"
-                android:rowCount="4">
+                android:rowCount="5">
 
                 <!-- SNR -->
                 <TextView
@@ -89,6 +89,25 @@
                     android:text="--"
                     android:textSize="12sp"
                     tools:text="-45 dB" />
+
+                <!-- TX Offset -->
+                <TextView
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_columnWeight="1"
+                    android:layout_marginTop="4dp"
+                    android:text="@string/monitor_tx_offset"
+                    android:textSize="12sp"
+                    android:textStyle="bold" />
+
+                <TextView
+                    android:id="@+id/tx_offset_value"
+                    android:layout_width="0dp"
+                    android:layout_height="wrap_content"
+                    android:layout_columnWeight="1"
+                    android:layout_marginTop="4dp"
+                    android:text="1500 Hz"
+                    android:textSize="12sp" />
 
                 <!-- Audio Device -->
                 <TextView

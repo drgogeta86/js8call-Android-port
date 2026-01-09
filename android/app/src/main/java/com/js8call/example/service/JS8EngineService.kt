@@ -52,6 +52,7 @@ class JS8EngineService : Service() {
     private val txMonitorHandler = Handler(Looper.getMainLooper())
     private var selectedAudioDeviceId: Int = -1  // -1 means use default
     private var selectedOutputDeviceId: Int = -1  // -1 means use default
+    private var currentTxOffsetHz: Float = 1500f
     private var txMonitorActive = false
     private var txMonitorWasAudioActive = false
     private var scoRoutingActive = false
@@ -152,6 +153,11 @@ class JS8EngineService : Service() {
                 val frequencyHz = intent.getLongExtra(EXTRA_FREQUENCY_HZ, 0L)
                 Log.i(TAG, "Setting frequency to $frequencyHz Hz")
                 setFrequency(frequencyHz)
+            }
+            ACTION_SET_TX_OFFSET -> {
+                val offsetHz = intent.getFloatExtra(EXTRA_TX_OFFSET_HZ, 1500f)
+                Log.i(TAG, "Setting TX offset to $offsetHz Hz")
+                currentTxOffsetHz = offsetHz
             }
             ACTION_TRANSMIT_MESSAGE -> {
                 handleTransmitMessage(intent)
@@ -1476,7 +1482,7 @@ class JS8EngineService : Service() {
             myGrid = grid,
             selectedCall = directedCall,
             submode = submode,
-            audioFrequencyHz = DEFAULT_AUDIO_FREQUENCY_HZ,
+            audioFrequencyHz = currentTxOffsetHz.toDouble(),
             txDelaySec = 0.0,
             forceIdentify = callsign.isNotBlank(),
             forceData = forceData
@@ -1652,6 +1658,7 @@ class JS8EngineService : Service() {
         const val ACTION_STOP = "com.js8call.example.ACTION_STOP"
         const val ACTION_SWITCH_AUDIO_DEVICE = "com.js8call.example.ACTION_SWITCH_AUDIO_DEVICE"
         const val ACTION_SET_FREQUENCY = "com.js8call.example.ACTION_SET_FREQUENCY"
+        const val ACTION_SET_TX_OFFSET = "com.js8call.example.ACTION_SET_TX_OFFSET"
         const val ACTION_ENGINE_STATE = "com.js8call.example.ACTION_ENGINE_STATE"
         const val ACTION_DECODE = "com.js8call.example.ACTION_DECODE"
         const val ACTION_SPECTRUM = "com.js8call.example.ACTION_SPECTRUM"
@@ -1693,6 +1700,7 @@ class JS8EngineService : Service() {
         const val EXTRA_TX_DIRECTED = "tx_directed"
         const val EXTRA_TX_SUBMODE = "tx_submode"
         const val EXTRA_TX_FREQ_HZ = "tx_freq_hz"
+        const val EXTRA_TX_OFFSET_HZ = "tx_offset_hz"
         const val EXTRA_TX_DELAY_S = "tx_delay_s"
         const val EXTRA_TX_FORCE_IDENTIFY = "tx_force_identify"
         const val EXTRA_TX_FORCE_DATA = "tx_force_data"

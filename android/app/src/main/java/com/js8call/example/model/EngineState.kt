@@ -13,13 +13,14 @@ enum class EngineState {
 /**
  * Monitoring status information.
  */
-data class MonitorStatus(
+ data class MonitorStatus(
     val state: EngineState = EngineState.STOPPED,
     val snr: Int = 0,
     val powerDb: Float = 0f,
     val peakDb: Float = 0f,
     val frequency: Long = 14078000, // Default to 20m JS8 frequency
     val audioDevice: String = "Unknown",
+    val txOffsetHz: Float = 1500f, // Default TX offset
     val errorMessage: String? = null
 ) {
     val isRunning: Boolean
