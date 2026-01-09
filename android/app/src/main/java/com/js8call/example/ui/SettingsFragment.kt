@@ -1,5 +1,6 @@
 package com.js8call.example.ui
 
+import android.content.pm.PackageManager
 import android.os.Bundle
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
@@ -21,7 +22,12 @@ class SettingsFragment : PreferenceFragmentCompat() {
         val prefs = preferenceManager.sharedPreferences
         if (prefs != null && !prefs.contains("my_status")) {
             val statusPref = findPreference<EditTextPreference>("my_status")
-            statusPref?.text = "JS8Android ${BuildConfig.VERSION_NAME}"
+            val versionName = try {
+                requireContext().packageManager.getPackageInfo(requireContext().packageName, 0).versionName
+            } catch (e: PackageManager.NameNotFoundException) {
+                "unknown"
+            }
+            statusPref?.text = "JS8Android-$versionName"
         }
 
         val rigModelPref = findPreference<ListPreference>("rig_hamlib_model")
