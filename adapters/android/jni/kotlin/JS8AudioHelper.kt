@@ -7,6 +7,7 @@ import android.media.AudioManager
 import android.media.AudioDeviceInfo
 import android.media.AudioRecord
 import android.media.MediaRecorder
+import android.os.Process
 import android.media.audiofx.AcousticEchoCanceler
 import android.media.audiofx.AutomaticGainControl
 import android.media.audiofx.NoiseSuppressor
@@ -25,7 +26,8 @@ class JS8AudioHelper(
     private val engine: JS8Engine,
     private val targetSampleRate: Int = 12000,  // Target rate for engine
     private var preferredDeviceId: Int = -1,  // -1 means use default
-    private var context: Context? = null
+    private var context: Context? = null,
+    private var audioSourceOverride: Int = -1
 ) : AutoCloseable {
 
     companion object {
@@ -46,6 +48,7 @@ class JS8AudioHelper(
     private var echoCanceler: AcousticEchoCanceler? = null
     private var preferredDeviceType: Int = AudioDeviceInfo.TYPE_UNKNOWN
     private var inputChannelCount = 1
+    @Volatile private var lastAbsMax = 0
 
     /**
      * Set preferred audio input device.
@@ -97,39 +100,42 @@ class JS8AudioHelper(
         try {
             val preferredDevice = resolvePreferredDevice()
             preferredDeviceType = preferredDevice?.type ?: AudioDeviceInfo.TYPE_UNKNOWN
-            audioSource = pickAudioSource(preferredDeviceType)
+            val sourceCandidates = buildAudioSourceCandidates(preferredDeviceType, audioSourceOverride)
             val candidates = buildSampleRateCandidates(preferredDeviceType, preferredDevice)
             val channelMasks = buildChannelMaskCandidates(preferredDevice)
             var bufferSizeBytes = 0
-            loop@ for (channelMask in channelMasks) {
-                for (rate in candidates) {
-                    val minBufferSize = AudioRecord.getMinBufferSize(
-                        rate,
-                        channelMask,
-                        AUDIO_FORMAT
-                    )
-                    if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
-                        continue
-                    }
-                    // Use 2x minimum buffer size for balance between latency and reliability
-                    bufferSizeBytes = minBufferSize * 2
-                    val format = AudioFormat.Builder()
-                        .setChannelMask(channelMask)
-                        .setEncoding(AUDIO_FORMAT)
-                        .setSampleRate(rate)
-                        .build()
-                    val builder = AudioRecord.Builder()
-                        .setAudioSource(audioSource)
-                        .setAudioFormat(format)
-                        .setBufferSizeInBytes(bufferSizeBytes)
-                    val record = builder.build()
-                    if (record.state == AudioRecord.STATE_INITIALIZED) {
-                        audioRecord = record
-                        captureSampleRate = rate
-                        inputChannelCount = record.channelCount
-                        break@loop
-                    } else {
-                        record.release()
+            loop@ for (source in sourceCandidates) {
+                audioSource = source
+                for (channelMask in channelMasks) {
+                    for (rate in candidates) {
+                        val minBufferSize = AudioRecord.getMinBufferSize(
+                            rate,
+                            channelMask,
+                            AUDIO_FORMAT
+                        )
+                        if (minBufferSize == AudioRecord.ERROR || minBufferSize == AudioRecord.ERROR_BAD_VALUE) {
+                            continue
+                        }
+                        val bufferMultiplier = if (preferredDeviceType == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) 4 else 2
+                        bufferSizeBytes = minBufferSize * bufferMultiplier
+                        val format = AudioFormat.Builder()
+                            .setChannelMask(channelMask)
+                            .setEncoding(AUDIO_FORMAT)
+                            .setSampleRate(rate)
+                            .build()
+                        val builder = AudioRecord.Builder()
+                            .setAudioSource(audioSource)
+                            .setAudioFormat(format)
+                            .setBufferSizeInBytes(bufferSizeBytes)
+                        val record = builder.build()
+                        if (record.state == AudioRecord.STATE_INITIALIZED) {
+                            audioRecord = record
+                            captureSampleRate = rate
+                            inputChannelCount = record.channelCount
+                            break@loop
+                        } else {
+                            record.release()
+                        }
                     }
                 }
             }
@@ -191,7 +197,7 @@ class JS8AudioHelper(
             }
 
             // Start recording thread
-            recordingThread = HandlerThread("JS8AudioCapture").apply {
+            recordingThread = HandlerThread("JS8AudioCapture", Process.THREAD_PRIORITY_AUDIO).apply {
                 start()
                 Handler(looper).post { recordLoop() }
             }
@@ -227,8 +233,13 @@ class JS8AudioHelper(
 
     private fun recordLoop() {
         val recorder = audioRecord ?: return
-        val framesPerRead = 4096  // Process in 4K frame chunks at 48kHz
         val channels = recorder.channelCount.coerceAtLeast(1)
+        val bufferFrames = recorder.bufferSizeInFrames.takeIf { it > 0 } ?: 1024
+        val framesPerRead = if (preferredDeviceType == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+            bufferFrames.coerceIn(512, 4096)
+        } else {
+            (bufferFrames / 2).coerceIn(256, 2048)
+        }
         val buffer = ShortArray(framesPerRead * channels)
         val monoBuffer = if (channels > 1) ShortArray(framesPerRead) else null
         var totalSamples = 0L
@@ -249,14 +260,39 @@ class JS8AudioHelper(
                         false
                     } else {
                         val out = monoBuffer ?: ShortArray(framesRead)
+                        val sums = LongArray(channels)
+                        val maxAbs = IntArray(channels)
                         for (i in 0 until framesRead) {
-                            val left = buffer[i * channels]
-                            val right = buffer[i * channels + 1]
-                            out[i] = ((left + right) / 2).toShort()
+                            val base = i * channels
+                            for (ch in 0 until channels) {
+                                val value = kotlin.math.abs(buffer[base + ch].toInt())
+                                sums[ch] += value.toLong()
+                                if (value > maxAbs[ch]) {
+                                    maxAbs[ch] = value
+                                }
+                            }
                         }
+                        var bestChannel = 0
+                        for (ch in 1 until channels) {
+                            if (sums[ch] > sums[bestChannel]) {
+                                bestChannel = ch
+                            }
+                        }
+                        for (i in 0 until framesRead) {
+                            out[i] = buffer[i * channels + bestChannel]
+                        }
+                        lastAbsMax = maxAbs[bestChannel]
                         engine.submitAudioRaw(out, framesRead, actualSampleRate, timestamp)
                     }
                 } else {
+                    var maxAbs = 0
+                    for (i in 0 until samplesRead) {
+                        val value = kotlin.math.abs(buffer[i].toInt())
+                        if (value > maxAbs) {
+                            maxAbs = value
+                        }
+                    }
+                    lastAbsMax = maxAbs
                     engine.submitAudioRaw(buffer, samplesRead, actualSampleRate, timestamp)
                 }
                 if (!success) {
@@ -299,9 +335,29 @@ class JS8AudioHelper(
 
     private fun pickAudioSource(deviceType: Int): Int {
         return when (deviceType) {
-            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> MediaRecorder.AudioSource.VOICE_COMMUNICATION
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> MediaRecorder.AudioSource.VOICE_RECOGNITION
             else -> MediaRecorder.AudioSource.MIC
         }
+    }
+
+    private fun buildAudioSourceCandidates(deviceType: Int, overrideSource: Int): List<Int> {
+        val base = when (deviceType) {
+            AudioDeviceInfo.TYPE_BLUETOOTH_SCO -> listOf(
+                MediaRecorder.AudioSource.VOICE_RECOGNITION,
+                MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+                MediaRecorder.AudioSource.MIC
+            )
+            else -> listOf(MediaRecorder.AudioSource.MIC)
+        }
+        if (overrideSource <= 0) return base
+        val candidates = ArrayList<Int>(base.size + 1)
+        candidates.add(overrideSource)
+        for (source in base) {
+            if (source != overrideSource) {
+                candidates.add(source)
+            }
+        }
+        return candidates
     }
 
     private fun buildSampleRateCandidates(
@@ -335,6 +391,10 @@ class JS8AudioHelper(
             candidates.add(AudioFormat.CHANNEL_IN_STEREO)
         }
         return candidates.toList()
+    }
+
+    fun getLastAbsMax(): Int {
+        return lastAbsMax
     }
 
     private fun audioSourceName(source: Int): String {

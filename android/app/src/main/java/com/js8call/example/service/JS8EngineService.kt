@@ -10,6 +10,7 @@ import android.content.Intent
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
+import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
 import android.os.IBinder
@@ -52,6 +53,15 @@ class JS8EngineService : Service() {
     private var txMonitorWasAudioActive = false
     private var scoRoutingActive = false
     private var previousAudioMode = AudioManager.MODE_NORMAL
+    private var scoRestartAttempts = 0
+    private var scoSilenceCheckToken = 0
+    private var scoStartToken = 0
+    private var scoSourceIndex = 0
+    private val scoSourceCandidates = intArrayOf(
+        MediaRecorder.AudioSource.VOICE_RECOGNITION,
+        MediaRecorder.AudioSource.VOICE_COMMUNICATION,
+        MediaRecorder.AudioSource.MIC
+    )
     private var callsignWarningShown = false
     private var lastTxMessage: String = ""
     private val heartbeatRegex = Regex("^\\s*([^:]+):\\s+@HB\\s+HEARTBEAT\\b", RegexOption.IGNORE_CASE)
@@ -284,26 +294,15 @@ class JS8EngineService : Service() {
 
                 applyTxBoostSetting()
 
-                applyInputRouting(selectedAudioDeviceId)
-                updateOutputDeviceForInput(selectedAudioDeviceId)
-
                 // Start audio capture with selected device (if any)
-                audioHelper = JS8AudioHelper(engine!!, 12000, selectedAudioDeviceId, applicationContext)
-                if (audioHelper?.startCapture() == true) {
-                    Log.i(TAG, "Audio capture started")
-
-                    // Detect and broadcast audio device
-                    val deviceName = getActiveAudioDevice()
-                    broadcastAudioDevice(deviceName)
-
-                    broadcastEngineState(STATE_RUNNING)
-
-                    // Initialize rig control if enabled
-                    initializeRigControl()
+                scoRestartAttempts = 0
+                scoSourceIndex = 0
+                scoSilenceCheckToken++
+                scoStartToken++
+                if (isScoInputDevice(selectedAudioDeviceId)) {
+                    startAudioCaptureWithScoWait(engine!!, selectedAudioDeviceId)
                 } else {
-                    Log.e(TAG, "Failed to start audio capture")
-                    broadcastError("Failed to start audio capture")
-                    broadcastEngineState(STATE_ERROR)
+                    startAudioCapture(engine!!, selectedAudioDeviceId)
                 }
             } else {
                 Log.e(TAG, "Failed to start engine")
@@ -524,6 +523,8 @@ class JS8EngineService : Service() {
 
     private fun stopEngine() {
         try {
+            scoSilenceCheckToken++
+            scoStartToken++
             audioHelper?.stopCapture()
             audioHelper?.close()
             audioHelper = null
@@ -750,24 +751,25 @@ class JS8EngineService : Service() {
 
     private fun switchAudioDevice(deviceId: Int) {
         try {
+            if (engine != null && deviceId == selectedAudioDeviceId) {
+                Log.i(TAG, "Audio device already selected (ID: $deviceId); ignoring switch request")
+                return
+            }
             // Store the selected device ID
             selectedAudioDeviceId = deviceId
+            scoRestartAttempts = 0
+            scoSourceIndex = 0
+            scoSilenceCheckToken++
+            scoStartToken++
 
             if (engine != null) {
                 audioHelper?.stopCapture()
                 audioHelper?.close()
                 audioHelper = null
-                applyInputRouting(deviceId)
-                audioHelper = JS8AudioHelper(engine!!, 12000, deviceId, applicationContext)
-                if (audioHelper?.startCapture() == true) {
-                    Log.i(TAG, "Audio capture started with device ID: $deviceId")
-
-                    val deviceName = getActiveAudioDevice()
-                    broadcastAudioDevice(deviceName)
-                    updateOutputDeviceForInput(deviceId)
+                if (isScoInputDevice(deviceId)) {
+                    startAudioCaptureWithScoWait(engine!!, deviceId)
                 } else {
-                    Log.e(TAG, "Failed to start audio capture")
-                    broadcastError("Failed to switch audio device")
+                    startAudioCapture(engine!!, deviceId)
                 }
             }
 
@@ -775,6 +777,113 @@ class JS8EngineService : Service() {
             Log.e(TAG, "Error switching audio device", e)
             broadcastError("Error switching audio device: ${e.message}")
         }
+    }
+
+    private fun scheduleScoSilenceCheck() {
+        if (!isScoInputDevice(selectedAudioDeviceId)) return
+        val token = ++scoSilenceCheckToken
+        scheduleScoSilenceCheckInternal(token)
+    }
+
+    private fun scheduleScoSilenceCheckInternal(token: Int) {
+        mainHandler.postDelayed({
+            if (token != scoSilenceCheckToken) return@postDelayed
+            val helper = audioHelper ?: return@postDelayed
+            val maxAbs = helper.getLastAbsMax()
+            if (maxAbs < SCO_SILENCE_THRESHOLD && scoRestartAttempts < SCO_MAX_RESTARTS) {
+                scoRestartAttempts++
+                scoSourceIndex = (scoSourceIndex + 1) % scoSourceCandidates.size
+                Log.w(TAG, "SCO input appears silent (max=$maxAbs); restarting capture (attempt $scoRestartAttempts/$SCO_MAX_RESTARTS)")
+                restartAudioCaptureForSco()
+                return@postDelayed
+            }
+            scheduleScoSilenceCheckInternal(token)
+        }, SCO_SILENCE_CHECK_DELAY_MS)
+    }
+
+    private fun restartAudioCaptureForSco() {
+        val deviceId = selectedAudioDeviceId
+        val activeEngine = engine ?: return
+        scoStartToken++
+        audioHelper?.stopCapture()
+        audioHelper?.close()
+        audioHelper = null
+        startAudioCaptureWithScoWait(activeEngine, deviceId)
+    }
+
+    private fun startAudioCapture(activeEngine: JS8Engine, deviceId: Int) {
+        applyInputRouting(deviceId)
+        startAudioCaptureInternal(activeEngine, deviceId)
+    }
+
+    private fun startAudioCaptureWithScoWait(activeEngine: JS8Engine, deviceId: Int) {
+        val token = scoStartToken
+        applyInputRouting(deviceId)
+        waitForScoActive(activeEngine, deviceId, token, 0)
+    }
+
+    private fun waitForScoActive(
+        activeEngine: JS8Engine,
+        deviceId: Int,
+        token: Int,
+        attempt: Int
+    ) {
+        if (token != scoStartToken) return
+        val scoActive = isScoActive(deviceId)
+        if (scoActive || attempt >= SCO_START_MAX_ATTEMPTS) {
+            if (scoActive) {
+                Log.i(TAG, "SCO audio active; starting capture")
+            } else {
+                Log.w(TAG, "SCO audio not active after $attempt checks; starting capture anyway")
+            }
+            startAudioCaptureInternal(activeEngine, deviceId)
+            return
+        }
+
+        mainHandler.postDelayed({
+            waitForScoActive(activeEngine, deviceId, token, attempt + 1)
+        }, SCO_START_WAIT_INTERVAL_MS)
+    }
+
+    private fun startAudioCaptureInternal(activeEngine: JS8Engine, deviceId: Int) {
+        audioHelper = buildAudioHelper(activeEngine, deviceId)
+        if (audioHelper?.startCapture() == true) {
+            Log.i(TAG, "Audio capture started with device ID: $deviceId")
+            val deviceName = getActiveAudioDevice()
+            broadcastAudioDevice(deviceName)
+            updateOutputDeviceForInput(deviceId)
+            broadcastEngineState(STATE_RUNNING)
+            scheduleScoSilenceCheck()
+        } else {
+            Log.e(TAG, "Failed to start audio capture")
+            broadcastError("Failed to start audio capture")
+        }
+    }
+
+    private fun isScoActive(deviceId: Int): Boolean {
+        val audioManager = getSystemService(AUDIO_SERVICE) as AudioManager
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            val commDevice = audioManager.communicationDevice
+            if (commDevice != null && commDevice.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO) {
+                if (deviceId < 0 || commDevice.id == deviceId) {
+                    return true
+                }
+            }
+        }
+        return audioManager.isBluetoothScoOn
+    }
+
+    private fun isScoInputDevice(deviceId: Int): Boolean {
+        return findInputDevice(deviceId)?.type == AudioDeviceInfo.TYPE_BLUETOOTH_SCO
+    }
+
+    private fun buildAudioHelper(engine: JS8Engine, deviceId: Int): JS8AudioHelper {
+        val overrideSource = if (isScoInputDevice(deviceId)) {
+            scoSourceCandidates[scoSourceIndex]
+        } else {
+            -1
+        }
+        return JS8AudioHelper(engine, 12000, deviceId, applicationContext, overrideSource)
     }
 
     private fun applyInputRouting(inputDeviceId: Int) {
@@ -820,6 +929,13 @@ class JS8EngineService : Service() {
             if (ok) {
                 scoRoutingActive = true
                 Log.i(TAG, "SCO routing enabled via communication device: ${commDevice.productName} (ID: ${commDevice.id})")
+                if (!audioManager.isBluetoothScoOn) {
+                    if (startBluetoothScoLegacy(audioManager, priorMode)) {
+                        Log.i(TAG, "SCO audio started after communication device routing")
+                    } else {
+                        Log.w(TAG, "Failed to start SCO audio after communication device routing")
+                    }
+                }
             } else {
                 audioManager.mode = priorMode
                 Log.w(TAG, "Failed to set communication device for SCO; falling back to SCO start")
@@ -881,6 +997,14 @@ class JS8EngineService : Service() {
                 audioManager.clearCommunicationDevice()
             } catch (e: SecurityException) {
                 Log.w(TAG, "Failed to clear communication device", e)
+            }
+            if (audioManager.isBluetoothScoOn) {
+                try {
+                    audioManager.stopBluetoothSco()
+                    audioManager.isBluetoothScoOn = false
+                } catch (e: SecurityException) {
+                    Log.w(TAG, "Failed to stop Bluetooth SCO", e)
+                }
             }
         } else {
             try {
@@ -1368,6 +1492,11 @@ class JS8EngineService : Service() {
 
         const val DEFAULT_AUDIO_FREQUENCY_HZ = 1500.0
         private const val TX_MONITOR_INTERVAL_MS = 250L
+        private const val SCO_START_WAIT_INTERVAL_MS = 200L
+        private const val SCO_START_MAX_ATTEMPTS = 10
+        private const val SCO_SILENCE_CHECK_DELAY_MS = 2000L
+        private const val SCO_SILENCE_THRESHOLD = 5
+        private const val SCO_MAX_RESTARTS = 3
 
         private const val CHANNEL_ID = "js8call_service"
         private const val NOTIFICATION_ID = 1

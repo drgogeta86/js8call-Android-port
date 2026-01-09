@@ -48,6 +48,7 @@ class MonitorFragment : Fragment() {
     private var availableDevices = mutableListOf<AudioDeviceItem>()
     private var isUpdatingSpinner = false
     private var userInitiatedAudioSelection = false
+    private var lastSelectedAudioDeviceId = -1
 
     // Frequency management
     private var isUpdatingFrequencySpinner = false
@@ -132,6 +133,11 @@ class MonitorFragment : Fragment() {
 
         // Register broadcast receiver
         registerBroadcastReceiver()
+    }
+
+    override fun onPause() {
+        super.onPause()
+        userInitiatedAudioSelection = false
     }
 
     override fun onDestroyView() {
@@ -351,6 +357,10 @@ class MonitorFragment : Fragment() {
 
                 // Only switch if engine is running
                 if (viewModel.isRunning.value == true) {
+                    if (selectedDevice.id == lastSelectedAudioDeviceId) return
+                    lastSelectedAudioDeviceId = selectedDevice.id
+                    val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(requireContext())
+                    prefs.edit().putInt(PREF_LAST_AUDIO_DEVICE_ID, selectedDevice.id).apply()
                     switchAudioDevice(selectedDevice.id)
                 }
             }
@@ -406,11 +416,15 @@ class MonitorFragment : Fragment() {
 
         audioDeviceAdapter?.notifyDataSetChanged()
 
-        // Select first device by default
         if (availableDevices.isNotEmpty()) {
+            val prefs = androidx.preference.PreferenceManager.getDefaultSharedPreferences(requireContext())
+            val savedDeviceId = prefs.getInt(PREF_LAST_AUDIO_DEVICE_ID, -1)
+            val selectedIndex = availableDevices.indexOfFirst { it.id == savedDeviceId }
+                .takeIf { it >= 0 } ?: 0
             isUpdatingSpinner = true
-            audioDeviceSpinner.setSelection(0)
+            audioDeviceSpinner.setSelection(selectedIndex)
             isUpdatingSpinner = false
+            lastSelectedAudioDeviceId = availableDevices[selectedIndex].id
         }
     }
 
@@ -527,5 +541,6 @@ class MonitorFragment : Fragment() {
 
     companion object {
         private const val REQUEST_AUDIO_PERMISSION = 1
+        private const val PREF_LAST_AUDIO_DEVICE_ID = "last_audio_device_id"
     }
 }
