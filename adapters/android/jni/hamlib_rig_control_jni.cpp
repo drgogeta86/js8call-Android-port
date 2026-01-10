@@ -125,6 +125,16 @@ enum serial_parity_e parse_parity(const std::string& parity) {
   return RIG_PARITY_NONE;
 }
 
+rmode_t parse_mode(const std::string& mode_str) {
+  if (mode_str == "USB") return RIG_MODE_USB;
+  if (mode_str == "PKTUSB") return RIG_MODE_PKTUSB;
+  if (mode_str == "LSB") return RIG_MODE_LSB;
+  if (mode_str == "CW") return RIG_MODE_CW;
+  if (mode_str == "AM") return RIG_MODE_AM;
+  if (mode_str == "FM") return RIG_MODE_FM;
+  return RIG_MODE_NONE;
+}
+
 jlong open_rig_with_path(int rig_model,
                          const std::string& path,
                          int baud_rate,
@@ -362,4 +372,38 @@ Java_com_js8call_core_HamlibRigControl_nativeGetLastError(JNIEnv* env,
                                                           jobject /*thiz*/) {
   std::string message = get_last_error();
   return env->NewStringUTF(message.c_str());
+}
+
+extern "C" JNIEXPORT jboolean JNICALL
+Java_com_js8call_core_HamlibRigControl_nativeSetMode(JNIEnv* env,
+                                                    jobject /*thiz*/,
+                                                    jlong handle_value,
+                                                    jstring mode,
+                                                    jint passband) {
+  if (!handle_value || !mode) return JNI_FALSE;
+  auto* handle = reinterpret_cast<HamlibRigHandle*>(handle_value);
+  std::lock_guard<std::mutex> lock(handle->mutex);
+  if (!handle->rig) return JNI_FALSE;
+
+  const char* mode_cstr = env->GetStringUTFChars(mode, nullptr);
+  std::string mode_str = mode_cstr ? mode_cstr : "";
+  if (mode_cstr) {
+    env->ReleaseStringUTFChars(mode, mode_cstr);
+  }
+
+  rmode_t rmode = parse_mode(mode_str);
+  if (rmode == RIG_MODE_NONE) {
+      // Just log warning, don't fail, maybe? No, fail.
+      log_error("Invalid mode or not supported in mapping: ", mode_str.c_str());
+      return JNI_FALSE;
+  }
+
+  pbwidth_t width = static_cast<pbwidth_t>(passband);
+
+  rig_flush(&handle->rig->state.rigport);
+  int ret = rig_set_mode(handle->rig, RIG_VFO_CURR, rmode, width);
+  if (ret != RIG_OK) {
+    log_error("rig_set_mode failed: ", rigerror(ret));
+  }
+  return ret == RIG_OK ? JNI_TRUE : JNI_FALSE;
 }

@@ -1269,6 +1269,12 @@ class JS8EngineService : Service() {
         val effectiveForceIdentify = forceIdentify || callsign.isNotBlank()
         val payloadText = applyGridIfHeartbeat(text, grid)
 
+        // Set transmit mode if configured (before queuing TX)
+        val modeSet = setTransmitMode()
+        if (!modeSet) {
+            Log.w(TAG, "Failed to set transmit mode (rig control might not be connected)")
+        }
+
         Log.i(
             TAG,
             "TX request: text_len=${payloadText.length}, directed='${directed}', submode=$submode, freq=$audioFrequencyHz, delay=$txDelaySec, identify=$effectiveForceIdentify"
@@ -1295,6 +1301,28 @@ class JS8EngineService : Service() {
             Log.e(TAG, "TX request rejected")
             broadcastError("Failed to start transmit")
             broadcastTxState(TX_STATE_FAILED)
+        }
+    }
+
+    private fun setTransmitMode(): Boolean {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val txMode = prefs.getString(PREF_TRANSMIT_MODE, "none") ?: "none"
+        
+        Log.d(TAG, "Setting transmit mode: $txMode")
+        
+        return when (txMode) {
+            "none" -> true
+            "usb" -> sendRigModeCommand(RIG_MODE_USB, 0)  // 0 = rig default passband
+            "usb_data" -> sendRigModeCommand(RIG_MODE_PKTUSB, 0)
+            else -> true
+        }
+    }
+    
+    private fun sendRigModeCommand(mode: String, passband: Int = 0): Boolean {
+        return when (rigControlMode) {
+            "hamlib_usb" -> hamlibRigControl?.setMode(mode, passband) == true
+            // Network rig control mode setting not requested yet
+            else -> false
         }
     }
 
@@ -1706,6 +1734,9 @@ class JS8EngineService : Service() {
         const val EXTRA_TX_FORCE_DATA = "tx_force_data"
         const val EXTRA_TX_STATE = "tx_state"
         const val EXTRA_RADIO_FREQUENCY_HZ = "radio_frequency_hz"
+        const val PREF_TRANSMIT_MODE = "transmit_mode"
+        const val RIG_MODE_USB = "USB"
+        const val RIG_MODE_PKTUSB = "PKTUSB"
 
         const val TX_STATE_QUEUED = "queued"
         const val TX_STATE_STARTED = "started"

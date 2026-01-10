@@ -74,6 +74,17 @@
             app:useSimpleSummaryProvider="true"
             app:iconSpaceReserved="false" />
 
+        <ListPreference
+            app:key="transmit_mode"
+            app:title="@string/settings_transmit_mode"
+            app:summary="@string/settings_transmit_mode_summary"
+            app:entries="@array/transmit_mode_entries"
+            app:entryValues="@array/transmit_mode_values"
+            app:defaultValue="none"
+            app:dependency="rig_control_enabled"
+            app:useSimpleSummaryProvider="true"
+            app:iconSpaceReserved="false" />
+
         <EditTextPreference
             app:key="rigctld_host"
             app:title="@string/settings_rigctld_host"

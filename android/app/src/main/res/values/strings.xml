@@ -86,6 +86,8 @@
 
     <string name="settings_rig_control">Rig Control</string>
     <string name="settings_rig_control_summary">Enable CAT control</string>
+    <string name="settings_transmit_mode">Transmit Mode</string>
+    <string name="settings_transmit_mode_summary">Set rig mode for JS8 transmissions</string>
     <string name="settings_rig_type">Rig Type</string>
     <string name="settings_rig_type_summary">Radio model</string>
     <string name="settings_rig_port">Port</string>

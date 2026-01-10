@@ -65,4 +65,16 @@
         <item>odd</item>
         <item>even</item>
     </string-array>
+
+    <!-- Transmit Mode Options -->
+    <string-array name="transmit_mode_entries">
+        <item>None</item>
+        <item>USB</item>
+        <item>USB Data</item>
+    </string-array>
+    <string-array name="transmit_mode_values">
+        <item>none</item>
+        <item>usb</item>
+        <item>usb_data</item>
+    </string-array>
 </resources>

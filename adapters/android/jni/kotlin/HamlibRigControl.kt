@@ -88,6 +88,13 @@ class HamlibRigControl {
         return nativeSetPtt(active, enabled)
     }
 
+    @Synchronized
+    fun setMode(mode: String, passband: Int): Boolean {
+        val active = handle
+        if (active == 0L) return false
+        return nativeSetMode(active, mode, passband)
+    }
+
     fun isOpen(): Boolean = handle != 0L
 
     fun getLastError(): String {
@@ -115,5 +122,6 @@ class HamlibRigControl {
     private external fun nativeClose(handle: Long)
     private external fun nativeSetFrequency(handle: Long, frequencyHz: Long): Boolean
     private external fun nativeSetPtt(handle: Long, enabled: Boolean): Boolean
+    private external fun nativeSetMode(handle: Long, mode: String, passband: Int): Boolean
     private external fun nativeGetLastError(): String
 }
