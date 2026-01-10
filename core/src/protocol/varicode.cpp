@@ -119,7 +119,9 @@ const std::regex kHeartbeatRe(
 // Capture groups: 1=callsign, 2=grid, 3=cmd, 4=num
 const std::regex kCompoundRe(R"(^\s*([A-Z0-9@/]+)(?:\s+([A-Z0-9]{4,6}))?(\s+[A-Z0-9 ?/+]+)?(\s*-?\d{0,3})?\s*$)", std::regex::icase);
 // Capture groups: 1=to, 2=cmd, 3=num
-const std::regex kDirectedRe(R"(^\s*([A-Z0-9@/]+):?(\s*[A-Z0-9 ?/+]*?)(\s*[+-]?\d{1,3})?\s*$)", std::regex::icase);
+const std::regex kDirectedRe(
+    R"(^\s*([A-Z0-9@/]+):?(\s?(?:AGN[?]|QSL[?]|HW CPY[?]|MSG TO[:]|SNR[?]|INFO[?]|GRID[?]|STATUS[?]|QUERY MSGS[?]|HEARING[?]|(?:(?:STATUS|HEARING|QUERY CALL|QUERY MSGS|QUERY|CMD|MSG|NACK|ACK|73|YES|NO|HEARTBEAT SNR|SNR|QSL|RR|SK|FB|INFO|GRID|DIT DIT)(?=[ ]|$))|[?> ]))?(\s*[+-]?\d{1,3})?)",
+    std::regex::icase);
 
 inline std::uint8_t pack_num_qtstyle(std::string const& num, bool* ok) {
   try {
@@ -957,7 +959,7 @@ std::vector<std::string> unpack_compound_frame(std::string const& text, std::uin
 
 std::string pack_directed_message(std::string const& text, std::string const& mycall, std::string* pTo, bool* pToCompound, std::string* pCmd, std::string* pNum, int* n) {
   std::smatch match;
-  if (!std::regex_match(text, match, kDirectedRe)) {
+  if (!std::regex_search(text, match, kDirectedRe)) {
     if (g_backend.pack_directed_message) return g_backend.pack_directed_message(text, mycall, pTo, pToCompound, pCmd, pNum, n);
     if (n) *n = 0;
     return {};

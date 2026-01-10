@@ -71,6 +71,10 @@ class JS8EngineService : Service() {
     private val heartbeatRegex = Regex("^\\s*([^:]+):\\s+@HB\\s+HEARTBEAT\\b", RegexOption.IGNORE_CASE)
     private val heardCallsigns = mutableMapOf<String, Long>()
     private val heardLock = Any()
+    private val relayBuffers = mutableMapOf<Int, RelayBuffer>()
+    private val relayLock = Any()
+    private val relayTargetRegex = Regex("^\\s*([A-Z0-9/]+)([> ])", RegexOption.IGNORE_CASE)
+    private val relayPathRegex = Regex("\\s(?:\\*DE\\*|VIA)\\s([A-Z0-9/]+)", RegexOption.IGNORE_CASE)
     private val txMonitorRunnable = object : Runnable {
         override fun run() {
             val activeEngine = engine
@@ -245,6 +249,7 @@ class JS8EngineService : Service() {
                     mainHandler.post {
                         updateHeardCallsign(text)
                         broadcastDecode(utc, snr, dt, freq, text, type, quality, mode)
+                        handleRelayFrame(text, snr, mode, freq, type)
                         maybeHandleAutoReply(text, snr, mode)
                     }
                 }
@@ -1416,6 +1421,53 @@ class JS8EngineService : Service() {
         }
     }
 
+    private fun handleRelayFrame(text: String, snr: Int, mode: Int, freq: Float, type: Int) {
+        if (!isRelayEnabled()) return
+        val callsign = getConfiguredCallsign() ?: return
+        val now = System.currentTimeMillis()
+        cleanupRelayBuffers(now)
+
+        val directed = parseDirectedCommand(text)
+        if (directed != null && directed.command == ">") {
+            val target = directed.to.trim().uppercase()
+            if (isGroupTarget(target)) return
+            if (!isSelfCallsign(callsign, target)) return
+
+            val key = findMatchingRelayBufferKey(freq) ?: Math.round(freq)
+            synchronized(relayLock) {
+                relayBuffers[key] = RelayBuffer(
+                    from = directed.from.trim().uppercase(),
+                    to = target,
+                    snr = snr,
+                    submode = if (mode >= 0) mode else 0,
+                    frequency = freq,
+                    lastUpdated = now
+                )
+            }
+            Log.i(TAG, "Relay command buffered from=${directed.from} to=${directed.to} freq=$freq")
+            return
+        }
+
+        if (!isRelayDataFrame(type)) return
+
+        val result = synchronized(relayLock) {
+            val key = findMatchingRelayBufferKey(freq) ?: return@synchronized null
+            val buffer = relayBuffers[key] ?: return@synchronized null
+            buffer.parts.add(text)
+            buffer.lastUpdated = now
+            if (isLastFrame(type)) {
+                relayBuffers.remove(key)
+                buffer
+            } else {
+                null
+            }
+        }
+
+        if (result != null) {
+            processRelayBuffer(result)
+        }
+    }
+
     private fun parseHeartbeat(text: String): Heartbeat? {
         val match = heartbeatRegex.find(text) ?: return null
         val from = match.groupValues.getOrNull(1)?.trim().orEmpty()
@@ -1437,6 +1489,16 @@ class JS8EngineService : Service() {
 
     private data class DirectedCommand(val from: String, val to: String, val command: String)
 
+    private data class RelayBuffer(
+        val from: String,
+        val to: String,
+        val snr: Int,
+        val submode: Int,
+        val frequency: Float,
+        var lastUpdated: Long,
+        val parts: MutableList<String> = mutableListOf()
+    )
+
     private fun shouldReplyToDirected(myCall: String, command: DirectedCommand): Boolean {
         if (command.to.startsWith("@")) return false
         if (!isSelfCallsign(myCall, command.to)) return false
@@ -1447,6 +1509,11 @@ class JS8EngineService : Service() {
     private fun isAutoreplyEnabled(): Boolean {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         return prefs.getBoolean(PREF_AUTOREPLY_ENABLED, false)
+    }
+
+    private fun isRelayEnabled(): Boolean {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        return prefs.getBoolean(PREF_RELAY_ENABLED, false)
     }
 
     private fun getConfiguredCallsign(): String? {
@@ -1477,11 +1544,239 @@ class JS8EngineService : Service() {
         return mineParts.any { it.isNotBlank() && theirParts.contains(it) }
     }
 
+    private fun isGroupTarget(target: String): Boolean {
+        return target.contains("@")
+    }
+
+    private fun isRelayDataFrame(type: Int): Boolean = (type and 0x4) != 0
+
+    private fun isLastFrame(type: Int): Boolean = (type and 0x2) != 0
+
     private fun formatSNR(snr: Int): String {
         if (snr < -60 || snr > 60) return ""
         val sign = if (snr >= 0) "+" else ""
         val width = if (snr < 0) 3 else 2
         return String.format("%s%0${width}d", sign, snr)
+    }
+
+    private fun cleanupRelayBuffers(now: Long) {
+        synchronized(relayLock) {
+            val iterator = relayBuffers.iterator()
+            while (iterator.hasNext()) {
+                val entry = iterator.next()
+                if (now - entry.value.lastUpdated > RELAY_BUFFER_TIMEOUT_MS) {
+                    iterator.remove()
+                }
+            }
+        }
+    }
+
+    private fun findMatchingRelayBufferKey(freq: Float): Int? {
+        synchronized(relayLock) {
+            for ((key, _) in relayBuffers) {
+                if (kotlin.math.abs(freq - key) <= RELAY_FREQUENCY_TOLERANCE_HZ) {
+                    return key
+                }
+            }
+        }
+        return null
+    }
+
+    private fun processRelayBuffer(buffer: RelayBuffer) {
+        if (buffer.parts.isEmpty()) return
+        val combined = buffer.parts.joinToString(separator = "").trimEnd()
+        if (combined.isBlank()) return
+
+        if (combined.trimStart().startsWith("@")) {
+            Log.i(TAG, "Relay payload starts with group token, ignoring")
+            return
+        }
+
+        val (valid, message) = validateRelayChecksum(combined)
+        if (!valid) {
+            Log.w(TAG, "Relay payload failed checksum validation")
+            return
+        }
+
+        val forwardPayload = buildRelayForwardPayload(message)
+        if (forwardPayload != null) {
+            val forwardText = "$forwardPayload *DE* ${buffer.from}"
+            sendRelayMessage(forwardText, buffer.submode)
+            return
+        }
+
+        val trimmed = message.trimStart()
+        if (trimmed.startsWith("ACK", ignoreCase = true)) {
+            return
+        }
+
+        val relayPath = parseRelayPathCallsigns(buffer.from, message).joinToString(">")
+        if (relayPath.isBlank()) return
+
+        val handled = maybeHandleRelayedAutoreply(message, relayPath, buffer.snr, buffer.submode)
+        if (!handled) {
+            sendRelayMessage("$relayPath ACK", buffer.submode)
+        }
+    }
+
+    private fun buildRelayForwardPayload(message: String): String? {
+        val trimmed = message.trimStart()
+        val match = relayTargetRegex.find(trimmed) ?: return null
+        val target = match.groupValues[1].trim().uppercase()
+        if (!isCallsignLike(target) || isGroupTarget(target)) return null
+
+        val separator = match.groupValues[2]
+        if (separator == ">") return trimmed
+
+        val replaceIndex = match.groupValues[1].length
+        if (replaceIndex >= trimmed.length) return null
+        val builder = StringBuilder(trimmed)
+        builder.setCharAt(replaceIndex, '>')
+        return builder.toString()
+    }
+
+    private fun isCallsignLike(token: String): Boolean {
+        if (token.length < 3 || token.length > 12) return false
+        val callsignRegex = Regex("^[A-Z0-9/]+$")
+        if (!callsignRegex.matches(token)) return false
+        if (!token.any { it.isDigit() } || !token.any { it.isLetter() }) return false
+        return true
+    }
+
+    private fun parseRelayPathCallsigns(from: String, text: String): List<String> {
+        val calls = mutableListOf<String>()
+        for (match in relayPathRegex.findAll(text.uppercase())) {
+            val call = match.groupValues.getOrNull(1)?.trim().orEmpty()
+            if (call.isNotEmpty()) {
+                calls.add(0, call)
+            }
+        }
+        val base = from.trim().uppercase()
+        if (base.isNotEmpty()) {
+            calls.add(0, base)
+        }
+        return calls
+    }
+
+    private fun maybeHandleRelayedAutoreply(
+        payload: String,
+        relayPath: String,
+        snr: Int,
+        submode: Int
+    ): Boolean {
+        if (!isAutoreplyEnabled()) return false
+        if (isTransmitActive()) return false
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+
+        val tokens = payload.trimStart().split(Regex("\\s+"), limit = 3)
+        if (tokens.isEmpty()) return false
+        val cmd = tokens[0].uppercase()
+
+        return when (cmd) {
+            "SNR?", "?" -> {
+                val snrText = formatSNR(snr)
+                if (snrText.isEmpty()) return false
+                sendRelayMessage("$relayPath SNR $snrText", submode)
+            }
+            "INFO?" -> {
+                val info = prefs.getString(PREF_MY_INFO, "")?.trim().orEmpty()
+                if (info.isBlank()) return false
+                sendRelayMessage("$relayPath INFO $info", submode)
+            }
+            "STATUS?" -> {
+                val status = prefs.getString(PREF_MY_STATUS, "")?.trim().orEmpty()
+                if (status.isBlank()) return false
+                sendRelayMessage("$relayPath STATUS $status", submode)
+            }
+            "HEARING?" -> {
+                val callsign = getConfiguredCallsign() ?: return false
+                val heard = getRecentHeardCallsigns(
+                    exclude = setOf(relayPath, callsign),
+                    limit = HEARD_LIMIT
+                )
+                if (heard.isEmpty()) return false
+                sendRelayMessage("$relayPath HEARING ${heard.joinToString(" ")}", submode)
+            }
+            "GRID?" -> {
+                val grid = prefs.getString("grid", "")?.trim().orEmpty().uppercase()
+                if (grid.isBlank()) return false
+                sendRelayMessage("$relayPath GRID $grid", submode)
+            }
+            "AGN?" -> {
+                val message = lastTxMessage.trimEnd()
+                if (message.isBlank()) return false
+                sendRelayMessage(message, submode)
+            }
+            else -> false
+        }
+    }
+
+    private fun validateRelayChecksum(message: String): Pair<Boolean, String> {
+        val trimmed = message.trimStart()
+        if (trimmed.length < 4) return false to trimmed
+        val checksum = trimmed.takeLast(3).uppercase()
+        val body = trimmed.dropLast(4)
+        return checksum16Valid(checksum, body) to body
+    }
+
+    private fun checksum16Valid(checksum: String, input: String): Boolean {
+        val crc = crc16Kermit(input.toByteArray(Charsets.US_ASCII))
+        return pack16Bits(crc) == checksum
+    }
+
+    private fun crc16Kermit(data: ByteArray): Int {
+        var crc = 0x0000
+        for (byte in data) {
+            var cur = byte.toInt() and 0xFF
+            for (i in 0 until 8) {
+                val mix = (crc xor cur) and 0x01
+                crc = crc ushr 1
+                if (mix != 0) {
+                    crc = crc xor 0x8408
+                }
+                cur = cur ushr 1
+            }
+        }
+        return crc and 0xFFFF
+    }
+
+    private fun pack16Bits(value: Int): String {
+        val alphabet = CHECKSUM_ALPHABET
+        val base = CHECKSUM_BASE
+        val tmp1 = value / (base * base)
+        val tmp2 = (value - (tmp1 * base * base)) / base
+        val tmp3 = value % base
+        return "${alphabet[tmp1]}${alphabet[tmp2]}${alphabet[tmp3]}"
+    }
+
+    private fun sendRelayMessage(text: String, submode: Int): Boolean {
+        val activeEngine = engine ?: return false
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val callsign = getConfiguredCallsign() ?: return false
+        val grid = prefs.getString("grid", "")?.trim().orEmpty().uppercase()
+        if (isTransmitActive()) return false
+
+        val payload = text.trim()
+        if (payload.isEmpty()) return false
+
+        val ok = activeEngine.transmitMessage(
+            text = payload,
+            myCall = callsign,
+            myGrid = grid,
+            selectedCall = "",
+            submode = submode,
+            audioFrequencyHz = currentTxOffsetHz.toDouble(),
+            txDelaySec = 0.0,
+            forceIdentify = callsign.isNotBlank(),
+            forceData = false
+        )
+
+        if (ok) {
+            updateLastTxMessage(payload, "")
+            broadcastTxState(TX_STATE_QUEUED)
+            startTxMonitor()
+        }
+        return ok
     }
 
     private fun sendAutoReply(
@@ -1675,11 +1970,16 @@ class JS8EngineService : Service() {
     companion object {
         private const val TAG = "JS8EngineService"
         private const val PREF_AUTOREPLY_ENABLED = "autoreply_enabled"
+        private const val PREF_RELAY_ENABLED = "relay_enabled"
         private const val PREF_MY_INFO = "my_info"
         private const val PREF_MY_STATUS = "my_status"
         private const val HEARD_LIMIT = 4
         private const val HEARD_WINDOW_MS = 15 * 60 * 1000L
         private val HEARD_EXCLUDE_TOKENS = setOf("CQ", "HB", "HEARTBEAT", "ALLCALL", "@ALLCALL")
+        private const val RELAY_BUFFER_TIMEOUT_MS = 90_000L
+        private const val RELAY_FREQUENCY_TOLERANCE_HZ = 10.0f
+        private const val CHECKSUM_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-./?"
+        private const val CHECKSUM_BASE = 41
 
         // Actions
         const val ACTION_START = "com.js8call.example.ACTION_START"
