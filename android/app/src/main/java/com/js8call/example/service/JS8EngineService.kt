@@ -1297,35 +1297,27 @@ class JS8EngineService : Service() {
             "TX request: text_len=${payloadText.length}, directed='${directed}', submode=$submode, freq=$audioFrequencyHz, delay=$txDelaySec, identify=$effectiveForceIdentify"
         )
 
-        mainHandler.post {
-            val engineRef = engine
-            if (engineRef == null) {
-                broadcastError("Engine not running")
-                broadcastTxState(TX_STATE_FAILED)
-                return@post
-            }
-            val ok = engineRef.transmitMessage(
-                text = payloadText,
-                myCall = callsign,
-                myGrid = grid,
-                selectedCall = directed,
-                submode = submode,
-                audioFrequencyHz = audioFrequencyHz,
-                txDelaySec = txDelaySec,
-                forceIdentify = effectiveForceIdentify,
-                forceData = forceData
-            )
+        val ok = activeEngine.transmitMessage(
+            text = payloadText,
+            myCall = callsign,
+            myGrid = grid,
+            selectedCall = directed,
+            submode = submode,
+            audioFrequencyHz = audioFrequencyHz,
+            txDelaySec = txDelaySec,
+            forceIdentify = effectiveForceIdentify,
+            forceData = forceData
+        )
 
-            if (ok) {
-                Log.i(TAG, "TX request accepted")
-                updateLastTxMessage(payloadText, directed)
-                broadcastTxState(TX_STATE_QUEUED)
-                startTxMonitor()
-            } else {
-                Log.e(TAG, "TX request rejected")
-                broadcastError("Failed to start transmit")
-                broadcastTxState(TX_STATE_FAILED)
-            }
+        if (ok) {
+            Log.i(TAG, "TX request accepted")
+            updateLastTxMessage(payloadText, directed)
+            broadcastTxState(TX_STATE_QUEUED)
+            startTxMonitor()
+        } else {
+            Log.e(TAG, "TX request rejected")
+            broadcastError("Failed to start transmit")
+            broadcastTxState(TX_STATE_FAILED)
         }
     }
 
