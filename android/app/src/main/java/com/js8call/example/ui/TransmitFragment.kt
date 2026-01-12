@@ -197,6 +197,7 @@ class TransmitFragment : Fragment() {
     }
 
     private fun setupSpeedSelector() {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(requireContext())
         val speedOptions = listOf(
             SpeedOption(getString(R.string.tx_speed_slow), SUBMODE_SLOW),
             SpeedOption(getString(R.string.tx_speed_normal), SUBMODE_NORMAL),
@@ -211,13 +212,15 @@ class TransmitFragment : Fragment() {
         )
         speedSelect.setAdapter(adapter)
 
-        val defaultIndex = speedOptions.indexOfFirst { it.submode == SUBMODE_NORMAL }
+        val savedSubmode = prefs.getInt(PREF_TX_SUBMODE, SUBMODE_NORMAL)
+        val defaultIndex = speedOptions.indexOfFirst { it.submode == savedSubmode }
             .takeIf { it >= 0 } ?: 0
         speedSelect.setText(speedOptions[defaultIndex].label, false)
         selectedSubmode = speedOptions[defaultIndex].submode
 
         speedSelect.setOnItemClickListener { _, _, position, _ ->
             selectedSubmode = speedOptions.getOrNull(position)?.submode ?: SUBMODE_NORMAL
+            prefs.edit().putInt(PREF_TX_SUBMODE, selectedSubmode).apply()
         }
     }
 
@@ -400,5 +403,6 @@ class TransmitFragment : Fragment() {
         private const val SUBMODE_TURBO = 2
         private const val SUBMODE_SLOW = 4
         private const val PREF_AUTOREPLY_ENABLED = "autoreply_enabled"
+        private const val PREF_TX_SUBMODE = "tx_submode"
     }
 }

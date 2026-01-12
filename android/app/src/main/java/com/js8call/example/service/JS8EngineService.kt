@@ -1434,17 +1434,35 @@ class JS8EngineService : Service() {
             if (!isSelfCallsign(callsign, target)) return
 
             val key = findMatchingRelayBufferKey(freq) ?: Math.round(freq)
+            val buffer = RelayBuffer(
+                from = directed.from.trim().uppercase(),
+                to = target,
+                snr = snr,
+                submode = getPreferredTxSubmode(),
+                frequency = freq,
+                lastUpdated = now,
+                inlinePayload = directed.payload.isNotBlank()
+            )
             synchronized(relayLock) {
-                relayBuffers[key] = RelayBuffer(
-                    from = directed.from.trim().uppercase(),
-                    to = target,
-                    snr = snr,
-                    submode = if (mode >= 0) mode else 0,
-                    frequency = freq,
-                    lastUpdated = now
-                )
+                relayBuffers[key] = buffer
             }
             Log.i(TAG, "Relay command buffered from=${directed.from} to=${directed.to} freq=$freq")
+
+            if (directed.payload.isNotBlank()) {
+                val (payload, hasEom) = normalizeRelayPayload(directed.payload)
+                if (payload.isNotBlank()) {
+                    buffer.parts.add(payload)
+                    buffer.lastUpdated = now
+                }
+                if (hasEom || isLastFrame(type)) {
+                    synchronized(relayLock) {
+                        relayBuffers.remove(key)
+                    }
+                    processRelayBuffer(buffer)
+                }
+                return
+            }
+
             return
         }
 
@@ -1478,16 +1496,52 @@ class JS8EngineService : Service() {
     private data class Heartbeat(val from: String)
 
     private fun parseDirectedCommand(text: String): DirectedCommand? {
-        val parts = text.trim().split(Regex("\\s+"), limit = 4)
-        if (parts.size < 3) return null
-        val from = parts[0].trim().trimEnd(':')
-        val to = parts[1].trim()
-        val command = parts[2].trim()
-        if (from.isBlank() || to.isBlank() || command.isBlank()) return null
-        return DirectedCommand(from, to, command)
+        val trimmed = text.trim()
+        if (trimmed.isBlank()) return null
+
+        val tokens = trimmed.split(Regex("\\s+"))
+        if (tokens.size < 2) return null
+
+        var index = 0
+        var from = ""
+        var toToken = tokens[index]
+
+        if (toToken.endsWith(":")) {
+            from = toToken.trimEnd(':')
+            index++
+            if (index >= tokens.size) return null
+            toToken = tokens[index]
+        }
+
+        var to = toToken
+        var command: String
+        var payloadStart = index + 1
+
+        if (toToken.endsWith(">")) {
+            to = toToken.trimEnd('>')
+            command = ">"
+        } else {
+            if (index + 1 >= tokens.size) return null
+            command = tokens[index + 1]
+            payloadStart = index + 2
+        }
+
+        if (to.isBlank() || command.isBlank()) return null
+        if (from.isBlank() && command != ">") return null
+        val payload = if (payloadStart < tokens.size) {
+            tokens.subList(payloadStart, tokens.size).joinToString(" ")
+        } else {
+            ""
+        }
+        return DirectedCommand(from, to, command, payload)
     }
 
-    private data class DirectedCommand(val from: String, val to: String, val command: String)
+    private data class DirectedCommand(
+        val from: String,
+        val to: String,
+        val command: String,
+        val payload: String
+    )
 
     private data class RelayBuffer(
         val from: String,
@@ -1496,6 +1550,7 @@ class JS8EngineService : Service() {
         val submode: Int,
         val frequency: Float,
         var lastUpdated: Long,
+        val inlinePayload: Boolean,
         val parts: MutableList<String> = mutableListOf()
     )
 
@@ -1514,6 +1569,18 @@ class JS8EngineService : Service() {
     private fun isRelayEnabled(): Boolean {
         val prefs = PreferenceManager.getDefaultSharedPreferences(this)
         return prefs.getBoolean(PREF_RELAY_ENABLED, false)
+    }
+
+    private fun getPreferredTxSubmode(): Int {
+        val prefs = PreferenceManager.getDefaultSharedPreferences(this)
+        val submode = prefs.getInt(PREF_TX_SUBMODE, SUBMODE_NORMAL)
+        return when (submode) {
+            SUBMODE_NORMAL,
+            SUBMODE_FAST,
+            SUBMODE_TURBO,
+            SUBMODE_SLOW -> submode
+            else -> SUBMODE_NORMAL
+        }
     }
 
     private fun getConfiguredCallsign(): String? {
@@ -1584,7 +1651,7 @@ class JS8EngineService : Service() {
 
     private fun processRelayBuffer(buffer: RelayBuffer) {
         if (buffer.parts.isEmpty()) return
-        val combined = buffer.parts.joinToString(separator = "").trimEnd()
+        val combined = stripRelayEom(buffer.parts.joinToString(separator = "").trimEnd())
         if (combined.isBlank()) return
 
         if (combined.trimStart().startsWith("@")) {
@@ -1593,27 +1660,38 @@ class JS8EngineService : Service() {
         }
 
         val (valid, message) = validateRelayChecksum(combined)
-        if (!valid) {
+        val payload = if (valid) {
+            message
+        } else if (buffer.inlinePayload) {
+            Log.w(TAG, "Relay payload checksum invalid, forwarding inline payload without validation")
+            stripOptionalRelayChecksum(combined)
+        } else {
             Log.w(TAG, "Relay payload failed checksum validation")
             return
         }
 
-        val forwardPayload = buildRelayForwardPayload(message)
+        if (payload.isBlank()) return
+
+        val forwardPayload = buildRelayForwardPayload(payload)
         if (forwardPayload != null) {
-            val forwardText = "$forwardPayload *DE* ${buffer.from}"
+            val forwardText = if (buffer.from.isNotBlank()) {
+                "$forwardPayload *DE* ${buffer.from}"
+            } else {
+                forwardPayload
+            }
             sendRelayMessage(forwardText, buffer.submode)
             return
         }
 
-        val trimmed = message.trimStart()
+        val trimmed = payload.trimStart()
         if (trimmed.startsWith("ACK", ignoreCase = true)) {
             return
         }
 
-        val relayPath = parseRelayPathCallsigns(buffer.from, message).joinToString(">")
+        val relayPath = parseRelayPathCallsigns(buffer.from, payload).joinToString(">")
         if (relayPath.isBlank()) return
 
-        val handled = maybeHandleRelayedAutoreply(message, relayPath, buffer.snr, buffer.submode)
+        val handled = maybeHandleRelayedAutoreply(payload, relayPath, buffer.snr, buffer.submode)
         if (!handled) {
             sendRelayMessage("$relayPath ACK", buffer.submode)
         }
@@ -1717,6 +1795,35 @@ class JS8EngineService : Service() {
         val checksum = trimmed.takeLast(3).uppercase()
         val body = trimmed.dropLast(4)
         return checksum16Valid(checksum, body) to body
+    }
+
+    private fun normalizeRelayPayload(payload: String): Pair<String, Boolean> {
+        var trimmed = payload.trimEnd()
+        val hasEom = trimmed.endsWith(RELAY_EOM_MARKER)
+        if (hasEom) {
+            trimmed = trimmed.dropLast(1).trimEnd()
+        }
+        return trimmed to hasEom
+    }
+
+    private fun stripRelayEom(payload: String): String {
+        var trimmed = payload.trimEnd()
+        if (trimmed.endsWith(RELAY_EOM_MARKER)) {
+            trimmed = trimmed.dropLast(1).trimEnd()
+        }
+        return trimmed
+    }
+
+    private fun stripOptionalRelayChecksum(message: String): String {
+        val trimmed = message.trimEnd()
+        val lastSpace = trimmed.lastIndexOf(' ')
+        if (lastSpace <= 0 || trimmed.length - lastSpace != 4) {
+            return trimmed
+        }
+        val checksum = trimmed.substring(lastSpace + 1)
+        if (checksum.length != 3) return trimmed
+        val isChecksumToken = checksum.all { CHECKSUM_ALPHABET.contains(it.uppercaseChar()) }
+        return if (isChecksumToken) trimmed.substring(0, lastSpace) else trimmed
     }
 
     private fun checksum16Valid(checksum: String, input: String): Boolean {
@@ -1971,6 +2078,7 @@ class JS8EngineService : Service() {
         private const val TAG = "JS8EngineService"
         private const val PREF_AUTOREPLY_ENABLED = "autoreply_enabled"
         private const val PREF_RELAY_ENABLED = "relay_enabled"
+        private const val PREF_TX_SUBMODE = "tx_submode"
         private const val PREF_MY_INFO = "my_info"
         private const val PREF_MY_STATUS = "my_status"
         private const val HEARD_LIMIT = 4
@@ -1978,6 +2086,11 @@ class JS8EngineService : Service() {
         private val HEARD_EXCLUDE_TOKENS = setOf("CQ", "HB", "HEARTBEAT", "ALLCALL", "@ALLCALL")
         private const val RELAY_BUFFER_TIMEOUT_MS = 90_000L
         private const val RELAY_FREQUENCY_TOLERANCE_HZ = 10.0f
+        private const val RELAY_EOM_MARKER = "\u2662"
+        private const val SUBMODE_NORMAL = 0
+        private const val SUBMODE_FAST = 1
+        private const val SUBMODE_TURBO = 2
+        private const val SUBMODE_SLOW = 4
         private const val CHECKSUM_ALPHABET = "0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ+-./?"
         private const val CHECKSUM_BASE = 41
 
