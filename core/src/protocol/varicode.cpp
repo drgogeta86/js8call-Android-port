@@ -563,6 +563,8 @@ std::string unpack_alphanumeric50(std::uint64_t packed) {
 
 std::uint32_t pack_callsign(std::string const& value, bool* p_portable) {
   std::string callsign = value;
+  auto base_it = kBaseCalls.find(callsign);
+  if (base_it != kBaseCalls.end()) return static_cast<std::uint32_t>(base_it->second);
   if (!callsign.empty()) {
     if (callsign.size() > 2 && callsign.substr(callsign.size() - 2) == "/P") {
       callsign = callsign.substr(0, callsign.size() - 2);
@@ -765,6 +767,10 @@ bool is_command_autoreply(std::string const& cmd) {
 }
 
 bool is_valid_callsign(std::string const& callsign, bool* p_is_compound) {
+  if (kBaseCalls.find(callsign) != kBaseCalls.end()) {
+    if (p_is_compound) *p_is_compound = false;
+    return true;
+  }
   static const std::regex re(R"(([@]?|\b)([A-Z0-9\/@][A-Z0-9\/]{0,2}[\/]?[A-Z0-9\/]{0,3}[\/]?[A-Z0-9\/]{0,3})\b)");
   bool match = std::regex_match(callsign, re);
   if (p_is_compound) *p_is_compound = callsign.find('/') != std::string::npos;
