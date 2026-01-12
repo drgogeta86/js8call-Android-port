@@ -1366,7 +1366,7 @@ class JS8EngineService : Service() {
             if (isSelfCallsign(callsign, heartbeat.from)) return
             val snrText = formatSNR(snr)
             if (snrText.isEmpty()) return
-            val submode = if (mode >= 0) mode else 0
+            val submode = getPreferredTxSubmode()
             val target = heartbeat.from.trim().uppercase()
             val payload = "HEARTBEAT SNR $snrText"
             Log.i(TAG, "Auto HB ACK: from=$target snr=$snrText text='$payload'")
@@ -1376,7 +1376,7 @@ class JS8EngineService : Service() {
 
         val directed = parseDirectedCommand(text) ?: return
         if (!shouldReplyToDirected(callsign, directed)) return
-        val submode = if (mode >= 0) mode else 0
+        val submode = getPreferredTxSubmode()
         when (directed.command.uppercase()) {
             "SNR?", "?" -> {
                 val snrText = formatSNR(snr)
