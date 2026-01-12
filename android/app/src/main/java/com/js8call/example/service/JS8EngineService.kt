@@ -13,6 +13,7 @@ import android.media.AudioManager
 import android.media.MediaRecorder
 import android.os.Build
 import android.os.Handler
+import android.os.HandlerThread
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
@@ -49,12 +50,16 @@ class JS8EngineService : Service() {
     private var usbSerialBridge: UsbSerialBridge? = null
     private var bluetoothSerialBridge: BluetoothSerialBridge? = null
     private val mainHandler = Handler(Looper.getMainLooper())
-    private val txMonitorHandler = Handler(Looper.getMainLooper())
+    private val txHandlerThread = HandlerThread("Js8Tx")
+    private lateinit var txHandler: Handler
+    private lateinit var txMonitorHandler: Handler
     private var selectedAudioDeviceId: Int = -1  // -1 means use default
     private var selectedOutputDeviceId: Int = -1  // -1 means use default
     private var currentTxOffsetHz: Float = 1500f
     private var txMonitorActive = false
     private var txMonitorWasAudioActive = false
+    @Volatile private var txSessionActive = false
+    @Volatile private var txAudioActive = false
     private var scoRoutingActive = false
     private var previousAudioMode = AudioManager.MODE_NORMAL
     private var scoRestartAttempts = 0
@@ -84,6 +89,8 @@ class JS8EngineService : Service() {
             }
             val sessionActive = activeEngine.isTransmitting()
             val audioActive = activeEngine.isTransmittingAudio()
+            txSessionActive = sessionActive
+            txAudioActive = audioActive
             if (!sessionActive) {
                 txMonitorActive = false
                 txMonitorWasAudioActive = false
@@ -128,6 +135,9 @@ class JS8EngineService : Service() {
         usbSerialBridge = UsbSerialBridge(applicationContext)
         bluetoothSerialBridge = BluetoothSerialBridge(applicationContext)
         hamlibRigControl = HamlibRigControl()
+        txHandlerThread.start()
+        txHandler = Handler(txHandlerThread.looper)
+        txMonitorHandler = Handler(Looper.getMainLooper())
         Log.i(TAG, "Service created")
     }
 
@@ -164,7 +174,8 @@ class JS8EngineService : Service() {
                 currentTxOffsetHz = offsetHz
             }
             ACTION_TRANSMIT_MESSAGE -> {
-                handleTransmitMessage(intent)
+                val txIntent = Intent(intent)
+                txHandler.post { handleTransmitMessage(txIntent) }
             }
         }
         return START_STICKY
@@ -178,6 +189,7 @@ class JS8EngineService : Service() {
         super.onDestroy()
         Log.i(TAG, "Service destroyed")
         stopEngine()
+        txHandlerThread.quitSafely()
     }
 
     private fun startForegroundService() {
@@ -1285,27 +1297,35 @@ class JS8EngineService : Service() {
             "TX request: text_len=${payloadText.length}, directed='${directed}', submode=$submode, freq=$audioFrequencyHz, delay=$txDelaySec, identify=$effectiveForceIdentify"
         )
 
-        val ok = activeEngine.transmitMessage(
-            text = payloadText,
-            myCall = callsign,
-            myGrid = grid,
-            selectedCall = directed,
-            submode = submode,
-            audioFrequencyHz = audioFrequencyHz,
-            txDelaySec = txDelaySec,
-            forceIdentify = effectiveForceIdentify,
-            forceData = forceData
-        )
+        mainHandler.post {
+            val engineRef = engine
+            if (engineRef == null) {
+                broadcastError("Engine not running")
+                broadcastTxState(TX_STATE_FAILED)
+                return@post
+            }
+            val ok = engineRef.transmitMessage(
+                text = payloadText,
+                myCall = callsign,
+                myGrid = grid,
+                selectedCall = directed,
+                submode = submode,
+                audioFrequencyHz = audioFrequencyHz,
+                txDelaySec = txDelaySec,
+                forceIdentify = effectiveForceIdentify,
+                forceData = forceData
+            )
 
-        if (ok) {
-            Log.i(TAG, "TX request accepted")
-            updateLastTxMessage(payloadText, directed)
-            broadcastTxState(TX_STATE_QUEUED)
-            startTxMonitor()
-        } else {
-            Log.e(TAG, "TX request rejected")
-            broadcastError("Failed to start transmit")
-            broadcastTxState(TX_STATE_FAILED)
+            if (ok) {
+                Log.i(TAG, "TX request accepted")
+                updateLastTxMessage(payloadText, directed)
+                broadcastTxState(TX_STATE_QUEUED)
+                startTxMonitor()
+            } else {
+                Log.e(TAG, "TX request rejected")
+                broadcastError("Failed to start transmit")
+                broadcastTxState(TX_STATE_FAILED)
+            }
         }
     }
 
@@ -1598,8 +1618,7 @@ class JS8EngineService : Service() {
     }
 
     private fun isTransmitActive(): Boolean {
-        val activeEngine = engine ?: return false
-        return activeEngine.isTransmitting() || activeEngine.isTransmittingAudio()
+        return txSessionActive || txAudioActive
     }
 
     private fun isSelfCallsign(myCall: String, from: String): Boolean {
