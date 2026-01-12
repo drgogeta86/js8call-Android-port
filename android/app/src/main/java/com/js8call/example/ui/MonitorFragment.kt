@@ -1,10 +1,8 @@
 package com.js8call.example.ui
 
 import android.Manifest
-import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import android.content.IntentFilter
 import android.content.pm.PackageManager
 import android.media.AudioDeviceInfo
 import android.media.AudioManager
@@ -21,7 +19,6 @@ import android.widget.TextView
 import androidx.core.content.ContextCompat
 import androidx.fragment.app.Fragment
 import androidx.lifecycle.ViewModelProvider
-import androidx.localbroadcastmanager.content.LocalBroadcastManager
 import com.google.android.material.snackbar.Snackbar
 import com.js8call.example.R
 import com.js8call.example.model.EngineState
@@ -56,47 +53,6 @@ class MonitorFragment : Fragment() {
     // Frequency management
     private var isUpdatingFrequencySpinner = false
 
-    private val broadcastReceiver = object : BroadcastReceiver() {
-        override fun onReceive(context: Context, intent: Intent) {
-            when (intent.action) {
-                JS8EngineService.ACTION_ENGINE_STATE -> {
-                    val state = intent.getStringExtra(JS8EngineService.EXTRA_STATE)
-                    handleEngineState(state)
-                }
-                JS8EngineService.ACTION_DECODE -> {
-                    val snr = intent.getIntExtra(JS8EngineService.EXTRA_SNR, 0)
-
-                    // Update SNR in monitor ViewModel
-                    viewModel.updateSnr(snr)
-                }
-                JS8EngineService.ACTION_SPECTRUM -> {
-                    val bins = intent.getFloatArrayExtra(JS8EngineService.EXTRA_BINS)
-                    val binHz = intent.getFloatExtra(JS8EngineService.EXTRA_BIN_HZ, 0f)
-                    val powerDb = intent.getFloatExtra(JS8EngineService.EXTRA_POWER_DB, 0f)
-                    val peakDb = intent.getFloatExtra(JS8EngineService.EXTRA_PEAK_DB, 0f)
-
-                    if (bins != null) {
-                        viewModel.updateSpectrum(bins, binHz, powerDb, peakDb)
-                    }
-                }
-                JS8EngineService.ACTION_AUDIO_DEVICE -> {
-                    val deviceName = intent.getStringExtra(JS8EngineService.EXTRA_AUDIO_DEVICE) ?: "Unknown"
-                    viewModel.updateAudioDevice(deviceName)
-                }
-                JS8EngineService.ACTION_ERROR -> {
-                    val message = intent.getStringExtra(JS8EngineService.EXTRA_ERROR_MESSAGE) ?: "Unknown error"
-                    viewModel.onError(message)
-                }
-                JS8EngineService.ACTION_RADIO_FREQUENCY -> {
-                    val frequencyHz = intent.getLongExtra(JS8EngineService.EXTRA_RADIO_FREQUENCY_HZ, 0L)
-                    if (frequencyHz > 0) {
-                        updateFrequencyFromRadio(frequencyHz)
-                    }
-                }
-            }
-        }
-    }
-
     override fun onCreateView(
         inflater: LayoutInflater,
         container: ViewGroup?,
@@ -109,7 +65,7 @@ class MonitorFragment : Fragment() {
         super.onViewCreated(view, savedInstanceState)
 
         // Initialize ViewModels
-        viewModel = ViewModelProvider(this)[MonitorViewModel::class.java]
+        viewModel = ViewModelProvider(requireActivity())[MonitorViewModel::class.java]
         transmitViewModel = ViewModelProvider(requireActivity())[TransmitViewModel::class.java]
 
         // Find views
@@ -132,6 +88,7 @@ class MonitorFragment : Fragment() {
         monitorVersionText.text = "Version: $versionName"
 
         // Set up waterfall offset callback
+        waterfallView.bindRenderer(viewModel.getWaterfallRenderer())
         waterfallView.onOffsetChanged = { offsetHz ->
             viewModel.setTxOffset(offsetHz)
             transmitViewModel.setTxOffset(offsetHz)
@@ -159,8 +116,6 @@ class MonitorFragment : Fragment() {
             toggleMonitoring()
         }
 
-        // Register broadcast receiver
-        registerBroadcastReceiver()
     }
 
     override fun onPause() {
@@ -170,39 +125,6 @@ class MonitorFragment : Fragment() {
 
     override fun onDestroyView() {
         super.onDestroyView()
-        unregisterBroadcastReceiver()
-    }
-
-    private fun registerBroadcastReceiver() {
-        val filter = IntentFilter().apply {
-            addAction(JS8EngineService.ACTION_ENGINE_STATE)
-            addAction(JS8EngineService.ACTION_DECODE)
-            addAction(JS8EngineService.ACTION_SPECTRUM)
-            addAction(JS8EngineService.ACTION_AUDIO_DEVICE)
-            addAction(JS8EngineService.ACTION_ERROR)
-            addAction(JS8EngineService.ACTION_RADIO_FREQUENCY)
-        }
-        LocalBroadcastManager.getInstance(requireContext())
-            .registerReceiver(broadcastReceiver, filter)
-    }
-
-    private fun unregisterBroadcastReceiver() {
-        LocalBroadcastManager.getInstance(requireContext())
-            .unregisterReceiver(broadcastReceiver)
-    }
-
-    private fun handleEngineState(state: String?) {
-        when (state) {
-            JS8EngineService.STATE_RUNNING -> {
-                viewModel.updateState(EngineState.RUNNING)
-            }
-            JS8EngineService.STATE_STOPPED -> {
-                viewModel.updateState(EngineState.STOPPED)
-            }
-            JS8EngineService.STATE_ERROR -> {
-                viewModel.updateState(EngineState.ERROR)
-            }
-        }
     }
 
     private fun observeViewModel() {
@@ -234,19 +156,14 @@ class MonitorFragment : Fragment() {
             }
         }
 
-        // Observe spectrum data
-        viewModel.spectrum.observe(viewLifecycleOwner) { spectrum ->
-            // Update waterfall view with spectrum data
-            android.util.Log.d("MonitorFragment", "Spectrum update: ${spectrum.bins.size} bins, power=${spectrum.powerDb} dB")
-            waterfallView.updateSpectrum(spectrum.bins, spectrum.binHz, spectrum.powerDb)
-        }
-
         // Observe running state
         viewModel.isRunning.observe(viewLifecycleOwner) { isRunning ->
             updateButtonState(isRunning)
-            if (!isRunning) {
-                // Clear waterfall when stopped
-                waterfallView.clear()
+        }
+
+        viewModel.radioFrequency.observe(viewLifecycleOwner) { frequencyHz ->
+            if (frequencyHz != null && frequencyHz > 0) {
+                updateFrequencyFromRadio(frequencyHz)
             }
         }
     }
@@ -489,6 +406,10 @@ class MonitorFragment : Fragment() {
 
         // Update spinner if we found a reasonable match (within 100 kHz)
         if (closestDiff < 100000) {
+            val currentIndex = frequencySpinner.selectedItemPosition
+            if (currentIndex == closestIndex) {
+                return
+            }
             isUpdatingFrequencySpinner = true
             frequencySpinner.setSelection(closestIndex)
             isUpdatingFrequencySpinner = false

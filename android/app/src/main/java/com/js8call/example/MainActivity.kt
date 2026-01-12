@@ -19,13 +19,16 @@ import androidx.navigation.ui.setupWithNavController
 import androidx.preference.PreferenceManager
 import com.google.android.material.bottomnavigation.BottomNavigationView
 import com.google.android.material.snackbar.Snackbar
+import com.js8call.example.model.EngineState
 import com.js8call.example.service.JS8EngineService
 import com.js8call.example.ui.DecodeViewModel
+import com.js8call.example.ui.MonitorViewModel
 
 class MainActivity : AppCompatActivity() {
 
     private lateinit var bottomNav: BottomNavigationView
     private lateinit var decodeViewModel: DecodeViewModel
+    private lateinit var monitorViewModel: MonitorViewModel
 
     private val decodeReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
@@ -40,6 +43,47 @@ class MainActivity : AppCompatActivity() {
                     val quality = intent.getFloatExtra(JS8EngineService.EXTRA_QUALITY, 0f)
                     val mode = intent.getIntExtra(JS8EngineService.EXTRA_MODE, 0)
                     decodeViewModel.addDecode(utc, snr, dt, freq, text, type, quality, mode)
+                    monitorViewModel.updateSnr(snr)
+                }
+            }
+        }
+    }
+
+    private val monitorReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            when (intent.action) {
+                JS8EngineService.ACTION_ENGINE_STATE -> {
+                    val state = when (intent.getStringExtra(JS8EngineService.EXTRA_STATE)) {
+                        JS8EngineService.STATE_RUNNING -> EngineState.RUNNING
+                        JS8EngineService.STATE_STOPPED -> EngineState.STOPPED
+                        JS8EngineService.STATE_STARTING -> EngineState.STARTING
+                        JS8EngineService.STATE_ERROR -> EngineState.ERROR
+                        else -> EngineState.ERROR
+                    }
+                    monitorViewModel.updateState(state)
+                }
+                JS8EngineService.ACTION_SPECTRUM -> {
+                    val bins = intent.getFloatArrayExtra(JS8EngineService.EXTRA_BINS)
+                    val binHz = intent.getFloatExtra(JS8EngineService.EXTRA_BIN_HZ, 0f)
+                    val powerDb = intent.getFloatExtra(JS8EngineService.EXTRA_POWER_DB, 0f)
+                    val peakDb = intent.getFloatExtra(JS8EngineService.EXTRA_PEAK_DB, 0f)
+                    if (bins != null) {
+                        monitorViewModel.updateSpectrum(bins, binHz, powerDb, peakDb)
+                    }
+                }
+                JS8EngineService.ACTION_AUDIO_DEVICE -> {
+                    val deviceName = intent.getStringExtra(JS8EngineService.EXTRA_AUDIO_DEVICE) ?: "Unknown"
+                    monitorViewModel.updateAudioDevice(deviceName)
+                }
+                JS8EngineService.ACTION_ERROR -> {
+                    val message = intent.getStringExtra(JS8EngineService.EXTRA_ERROR_MESSAGE) ?: "Unknown error"
+                    monitorViewModel.onError(message)
+                }
+                JS8EngineService.ACTION_RADIO_FREQUENCY -> {
+                    val frequencyHz = intent.getLongExtra(JS8EngineService.EXTRA_RADIO_FREQUENCY_HZ, 0L)
+                    if (frequencyHz > 0) {
+                        monitorViewModel.updateFrequency(frequencyHz)
+                    }
                 }
             }
         }
@@ -71,6 +115,7 @@ class MainActivity : AppCompatActivity() {
         bottomNav.setupWithNavController(navController)
 
         decodeViewModel = ViewModelProvider(this)[DecodeViewModel::class.java]
+        monitorViewModel = ViewModelProvider(this)[MonitorViewModel::class.java]
 
         // Check permissions
         checkPermissions()
@@ -89,6 +134,16 @@ class MainActivity : AppCompatActivity() {
         }
         LocalBroadcastManager.getInstance(this)
             .registerReceiver(decodeReceiver, filter)
+
+        val monitorFilter = IntentFilter().apply {
+            addAction(JS8EngineService.ACTION_ENGINE_STATE)
+            addAction(JS8EngineService.ACTION_SPECTRUM)
+            addAction(JS8EngineService.ACTION_AUDIO_DEVICE)
+            addAction(JS8EngineService.ACTION_ERROR)
+            addAction(JS8EngineService.ACTION_RADIO_FREQUENCY)
+        }
+        LocalBroadcastManager.getInstance(this)
+            .registerReceiver(monitorReceiver, monitorFilter)
     }
 
     override fun onStop() {
@@ -96,6 +151,8 @@ class MainActivity : AppCompatActivity() {
             .unregisterOnSharedPreferenceChangeListener(prefsListener)
         LocalBroadcastManager.getInstance(this)
             .unregisterReceiver(decodeReceiver)
+        LocalBroadcastManager.getInstance(this)
+            .unregisterReceiver(monitorReceiver)
         super.onStop()
     }
 

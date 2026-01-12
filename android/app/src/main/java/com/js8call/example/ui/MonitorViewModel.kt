@@ -26,6 +26,11 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     private val _txOffsetHz = MutableLiveData<Float>(1500f)
     val txOffsetHz: LiveData<Float> = _txOffsetHz
 
+    private val _radioFrequency = MutableLiveData<Long>()
+    val radioFrequency: LiveData<Long> = _radioFrequency
+
+    private val waterfallRenderer = WaterfallRenderer()
+
     init {
         _status.value = MonitorStatus(state = EngineState.STOPPED)
     }
@@ -44,6 +49,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
     fun stopMonitoring() {
         _status.value = _status.value?.copy(state = EngineState.STOPPED)
         _isRunning.value = false
+        waterfallRenderer.clear()
         // Service will be stopped by fragment
     }
 
@@ -56,12 +62,16 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             errorMessage = errorMessage
         )
         _isRunning.value = (state == EngineState.RUNNING)
+        if (state == EngineState.STOPPED || state == EngineState.ERROR) {
+            waterfallRenderer.clear()
+        }
     }
 
     /**
      * Update spectrum data from engine.
      */
     fun updateSpectrum(bins: FloatArray, binHz: Float, powerDb: Float, peakDb: Float) {
+        waterfallRenderer.updateSpectrum(bins, binHz)
         _spectrum.value = SpectrumData(bins, binHz, powerDb, peakDb)
 
         // Update power levels in status
@@ -83,6 +93,7 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
      */
     fun updateFrequency(frequency: Long) {
         _status.value = _status.value?.copy(frequency = frequency)
+        _radioFrequency.value = frequency
     }
 
     /**
@@ -107,6 +118,8 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
         return _txOffsetHz.value ?: 1500f
     }
 
+    fun getWaterfallRenderer(): WaterfallRenderer = waterfallRenderer
+
     /**
      * Handle error.
      */
@@ -116,11 +129,17 @@ class MonitorViewModel(application: Application) : AndroidViewModel(application)
             errorMessage = message
         )
         _isRunning.value = false
+        waterfallRenderer.clear()
     }
 
     fun clearError() {
         val current = _status.value ?: return
         if (current.errorMessage == null) return
         _status.value = current.copy(errorMessage = null)
+    }
+
+    override fun onCleared() {
+        super.onCleared()
+        waterfallRenderer.release()
     }
 }
