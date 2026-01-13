@@ -21,6 +21,7 @@
         <item>17m - 18.104 MHz</item>
         <item>15m - 21.078 MHz</item>
         <item>12m - 24.922 MHz</item>
+        <item>11m - 28.245 MHz</item>
         <item>10m - 28.078 MHz</item>
         <item>6m - 50.318 MHz</item>
     </string-array>
@@ -32,6 +33,7 @@
         <item>18104000</item>
         <item>21078000</item>
         <item>24922000</item>
+        <item>27245000</item>
         <item>28078000</item>
         <item>50318000</item>
     </string-array>
