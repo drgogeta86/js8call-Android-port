@@ -1,15 +1,17 @@
 # JS8Android
 
 JS8Android is the Android port of JS8Call.
+
 [![Buy Me A Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://www.buymeacoffee.com/punk.kaos)
 
 ## Beta status
 
-This port is *wildly* beta. The interface has many parts that are stubbed and do not
-function in any way. Currently RX and TX work, as do basic auto-reply responses.
-Basic network rig control via rigctld works, plus USB rig control via Hamlib. The GUI *will* change. Not
+This port is beta.. Currently RX and TX work, as do basic auto-reply responses.
+Network rig control via rigctld works, plus USB rig control via Hamlib. The GUI *will* change. Not
 responsible for this code doing unexpected things, draining all of your batteries, or
 kidnapping your pets. User beware.
+
+Please open bug reports when you find things wrong, bug reports help me build this app quicker! 
 
 ## Android Port Summary
 
