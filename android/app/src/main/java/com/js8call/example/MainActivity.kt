@@ -116,6 +116,7 @@ class MainActivity : AppCompatActivity() {
 
         decodeViewModel = ViewModelProvider(this)[DecodeViewModel::class.java]
         monitorViewModel = ViewModelProvider(this)[MonitorViewModel::class.java]
+        decodeViewModel.loadPersistedDecodesIfEnabled()
 
         // Check permissions
         checkPermissions()
@@ -153,6 +154,7 @@ class MainActivity : AppCompatActivity() {
             .unregisterReceiver(decodeReceiver)
         LocalBroadcastManager.getInstance(this)
             .unregisterReceiver(monitorReceiver)
+        decodeViewModel.persistDecodesOnStop()
         super.onStop()
     }
 

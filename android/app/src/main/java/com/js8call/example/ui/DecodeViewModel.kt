@@ -1,13 +1,18 @@
 package com.js8call.example.ui
 
 import android.app.Application
+import android.util.Log
 import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.LiveData
 import androidx.lifecycle.MutableLiveData
+import androidx.preference.PreferenceManager
 import com.js8call.example.model.DecodedMessage
 import com.js8call.example.model.MessageBuffer
+import java.io.File
 import kotlin.math.abs
 import kotlin.math.roundToInt
+import org.json.JSONArray
+import org.json.JSONObject
 
 /**
  * ViewModel for the Decodes screen.
@@ -23,6 +28,7 @@ class DecodeViewModel(application: Application) : AndroidViewModel(application) 
 
     private val allDecodes = mutableListOf<DecodedMessage>()
     private val maxDecodes = 1000 // Keep last 1000 decodes
+    private var hasLoadedPersistedDecodes = false
 
     // Message buffering for multipart messages
     private val messageBuffers = mutableMapOf<Int, MessageBuffer>()
@@ -40,6 +46,55 @@ class DecodeViewModel(application: Application) : AndroidViewModel(application) 
             allDecodes.removeAt(allDecodes.size - 1)
         }
 
+        applyFilter()
+    }
+
+    fun loadPersistedDecodesIfEnabled() {
+        if (hasLoadedPersistedDecodes) return
+        hasLoadedPersistedDecodes = true
+
+        val app = getApplication<Application>()
+        val prefs = PreferenceManager.getDefaultSharedPreferences(app)
+        if (!prefs.getBoolean(PREF_PERSIST_DECODES, false)) return
+
+        val file = File(app.filesDir, PERSISTED_DECODE_FILE)
+        if (!file.exists()) return
+
+        val contents = try {
+            file.readText(Charsets.UTF_8)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed reading persisted decodes", e)
+            return
+        }
+        if (contents.isBlank()) return
+
+        val loaded = mutableListOf<DecodedMessage>()
+        try {
+            val arr = JSONArray(contents)
+            for (i in 0 until arr.length()) {
+                val obj = arr.optJSONObject(i) ?: continue
+                loaded.add(
+                    DecodedMessage(
+                        utc = obj.optInt("utc"),
+                        snr = obj.optInt("snr"),
+                        dt = obj.optDouble("dt").toFloat(),
+                        frequency = obj.optDouble("frequency").toFloat(),
+                        text = obj.optString("text"),
+                        type = obj.optInt("type"),
+                        quality = obj.optDouble("quality").toFloat(),
+                        mode = obj.optInt("mode"),
+                        timestamp = obj.optLong("timestamp", System.currentTimeMillis())
+                    )
+                )
+            }
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed parsing persisted decodes", e)
+            return
+        }
+
+        if (loaded.isEmpty()) return
+        allDecodes.clear()
+        allDecodes.addAll(loaded.take(maxDecodes))
         applyFilter()
     }
 
@@ -243,6 +298,39 @@ class DecodeViewModel(application: Application) : AndroidViewModel(application) 
         _decodes.value = emptyList()
     }
 
+    fun persistDecodesOnStop() {
+        val app = getApplication<Application>()
+        val prefs = PreferenceManager.getDefaultSharedPreferences(app)
+        val file = File(app.filesDir, PERSISTED_DECODE_FILE)
+        if (!prefs.getBoolean(PREF_PERSIST_DECODES, false)) {
+            if (file.exists() && !file.delete()) {
+                Log.w(TAG, "Failed to delete persisted decodes")
+            }
+            return
+        }
+
+        val arr = JSONArray()
+        allDecodes.take(maxDecodes).forEach { decode ->
+            val obj = JSONObject()
+            obj.put("utc", decode.utc)
+            obj.put("snr", decode.snr)
+            obj.put("dt", decode.dt)
+            obj.put("frequency", decode.frequency)
+            obj.put("text", decode.text)
+            obj.put("type", decode.type)
+            obj.put("quality", decode.quality)
+            obj.put("mode", decode.mode)
+            obj.put("timestamp", decode.timestamp)
+            arr.put(obj)
+        }
+
+        try {
+            file.writeText(arr.toString(), Charsets.UTF_8)
+        } catch (e: Exception) {
+            Log.w(TAG, "Failed writing persisted decodes", e)
+        }
+    }
+
     /**
      * Set filter text.
      */
@@ -276,5 +364,11 @@ class DecodeViewModel(application: Application) : AndroidViewModel(application) 
      */
     fun exportDecodes(): String {
         return allDecodes.joinToString("\n") { it.toDisplayString() }
+    }
+
+    companion object {
+        private const val TAG = "DecodeViewModel"
+        private const val PREF_PERSIST_DECODES = "persist_decodes"
+        private const val PERSISTED_DECODE_FILE = "decoded_messages.json"
     }
 }

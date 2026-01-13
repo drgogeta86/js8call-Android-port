@@ -218,6 +218,13 @@
             app:defaultValue="false"
             app:iconSpaceReserved="false" />
 
+        <SwitchPreferenceCompat
+            app:key="persist_decodes"
+            app:title="@string/settings_persist_decodes"
+            app:summary="@string/settings_persist_decodes_summary"
+            app:defaultValue="false"
+            app:iconSpaceReserved="false" />
+
     </PreferenceCategory>
 
 </PreferenceScreen>
