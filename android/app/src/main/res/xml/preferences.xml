@@ -14,11 +14,10 @@
             app:useSimpleSummaryProvider="true"
             app:iconSpaceReserved="false" />
 
-        <EditTextPreference
+        <com.js8call.example.ui.GridSquarePreference
             app:key="grid"
             app:title="@string/settings_grid"
             app:summary="@string/settings_grid_summary"
-            app:useSimpleSummaryProvider="true"
             app:iconSpaceReserved="false" />
 
         <EditTextPreference

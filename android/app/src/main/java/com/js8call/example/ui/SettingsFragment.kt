@@ -1,20 +1,44 @@
 package com.js8call.example.ui
 
+import android.Manifest
+import android.content.Context
 import android.content.pm.PackageManager
+import android.location.Location
+import android.location.LocationListener
+import android.location.LocationManager
 import android.os.Bundle
+import android.os.Handler
+import android.os.Looper
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.core.content.ContextCompat
 import androidx.preference.EditTextPreference
 import androidx.preference.ListPreference
 import androidx.preference.PreferenceFragmentCompat
+import com.google.android.material.snackbar.Snackbar
 import com.js8call.core.BluetoothSerialPortCatalog
 import com.js8call.core.HamlibRigCatalog
 import com.js8call.core.UsbSerialPortCatalog
-import com.js8call.example.BuildConfig
 import com.js8call.example.R
+import java.util.Locale
 
 /**
  * Fragment for app settings.
  */
 class SettingsFragment : PreferenceFragmentCompat() {
+
+    private val locationHandler = Handler(Looper.getMainLooper())
+    private var pendingLocationListener: LocationListener? = null
+    private var pendingLocationTimeout: Runnable? = null
+    private var gridPreference: GridSquarePreference? = null
+
+    private val locationPermissionLauncher =
+        registerForActivityResult(ActivityResultContracts.RequestPermission()) { granted ->
+            if (granted) {
+                requestGridLocation()
+            } else {
+                showGridError(R.string.permission_location_denied)
+            }
+        }
 
     override fun onCreatePreferences(savedInstanceState: Bundle?, rootKey: String?) {
         setPreferencesFromResource(R.xml.preferences, rootKey)
@@ -108,6 +132,187 @@ class SettingsFragment : PreferenceFragmentCompat() {
                 true
             }
         }
+
+        gridPreference = findPreference("grid")
+        gridPreference?.onUpdateClickListener = { onGridUpdateRequested() }
+    }
+
+    override fun onStop() {
+        cancelLocationRequest()
+        super.onStop()
+    }
+
+    private fun onGridUpdateRequested() {
+        val context = context ?: return
+        val granted = ContextCompat.checkSelfPermission(
+            context,
+            Manifest.permission.ACCESS_FINE_LOCATION
+        ) == PackageManager.PERMISSION_GRANTED
+        if (granted) {
+            requestGridLocation()
+        } else {
+            locationPermissionLauncher.launch(Manifest.permission.ACCESS_FINE_LOCATION)
+        }
+    }
+
+    private fun requestGridLocation() {
+        val context = context ?: return
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        cancelLocationRequest()
+
+        val now = System.currentTimeMillis()
+        val lastLocation = findRecentLocation(locationManager, now, LOCATION_MAX_AGE_MS)
+        if (lastLocation != null) {
+            applyGridFromLocation(lastLocation)
+            return
+        }
+
+        val provider = when {
+            locationManager.isProviderEnabled(LocationManager.GPS_PROVIDER) ->
+                LocationManager.GPS_PROVIDER
+            locationManager.isProviderEnabled(LocationManager.NETWORK_PROVIDER) ->
+                LocationManager.NETWORK_PROVIDER
+            else -> null
+        }
+        if (provider == null) {
+            showGridError(R.string.error_location_update_failed)
+            return
+        }
+
+        val listener = object : LocationListener {
+            override fun onLocationChanged(location: Location) {
+                cancelLocationRequest()
+                applyGridFromLocation(location)
+            }
+
+            override fun onProviderEnabled(provider: String) = Unit
+
+            override fun onProviderDisabled(provider: String) = Unit
+
+            @Deprecated("Deprecated in Java")
+            override fun onStatusChanged(provider: String?, status: Int, extras: Bundle?) = Unit
+        }
+        pendingLocationListener = listener
+        try {
+            locationManager.requestLocationUpdates(
+                provider,
+                0L,
+                0f,
+                listener,
+                Looper.getMainLooper()
+            )
+        } catch (_: SecurityException) {
+            cancelLocationRequest()
+            showGridError(R.string.error_location_update_failed)
+            return
+        }
+
+        val timeout = Runnable {
+            cancelLocationRequest()
+            showGridError(R.string.error_location_update_failed)
+        }
+        pendingLocationTimeout = timeout
+        locationHandler.postDelayed(timeout, LOCATION_TIMEOUT_MS)
+    }
+
+    private fun findRecentLocation(
+        locationManager: LocationManager,
+        nowMs: Long,
+        maxAgeMs: Long
+    ): Location? {
+        val gps = getLastKnownIfFresh(
+            locationManager,
+            LocationManager.GPS_PROVIDER,
+            nowMs,
+            maxAgeMs
+        )
+        if (gps != null) return gps
+
+        return getLastKnownIfFresh(
+            locationManager,
+            LocationManager.NETWORK_PROVIDER,
+            nowMs,
+            maxAgeMs
+        )
+    }
+
+    private fun getLastKnownIfFresh(
+        locationManager: LocationManager,
+        provider: String,
+        nowMs: Long,
+        maxAgeMs: Long
+    ): Location? {
+        if (!locationManager.isProviderEnabled(provider)) return null
+        val location = try {
+            locationManager.getLastKnownLocation(provider)
+        } catch (_: SecurityException) {
+            null
+        } ?: return null
+        return if (nowMs - location.time <= maxAgeMs) location else null
+    }
+
+    private fun cancelLocationRequest() {
+        pendingLocationTimeout?.let { locationHandler.removeCallbacks(it) }
+        pendingLocationTimeout = null
+        val listener = pendingLocationListener
+        pendingLocationListener = null
+        val context = context ?: return
+        val locationManager = context.getSystemService(Context.LOCATION_SERVICE) as LocationManager
+        listener?.let { locationManager.removeUpdates(it) }
+    }
+
+    private fun applyGridFromLocation(location: Location) {
+        val grid = maidenheadFromLocation(location.latitude, location.longitude)
+        gridPreference?.setGridValue(grid)
+    }
+
+    private fun showGridError(messageResId: Int) {
+        val view = view ?: return
+        Snackbar.make(view, messageResId, Snackbar.LENGTH_LONG).show()
+    }
+
+    private fun maidenheadFromLocation(latitude: Double, longitude: Double): String {
+        var lon = -longitude
+        var lat = latitude.coerceIn(-90.0, 90.0)
+        if (lon < -180.0) lon += 360.0
+        if (lon > 180.0) lon -= 360.0
+        if (lon == 180.0) lon = 179.999999
+        if (lat == 90.0) lat = 89.999999
+
+        val lonMinutes = (180.0 - lon) * 60.0
+        val latMinutes = (lat + 90.0) * 60.0
+
+        val lonField = (lonMinutes / 1200.0).toInt().coerceIn(0, 17)
+        val latField = (latMinutes / 600.0).toInt().coerceIn(0, 17)
+
+        val lonFieldRemainder = lonMinutes - lonField * 1200.0
+        val latFieldRemainder = latMinutes - latField * 600.0
+
+        val lonSquare = (lonFieldRemainder / 120.0).toInt().coerceIn(0, 9)
+        val latSquare = (latFieldRemainder / 60.0).toInt().coerceIn(0, 9)
+
+        val lonSquareRemainder = lonFieldRemainder - lonSquare * 120.0
+        val latSquareRemainder = latFieldRemainder - latSquare * 60.0
+
+        val lonSub = (lonSquareRemainder / 5.0).toInt().coerceIn(0, 23)
+        val latSub = (latSquareRemainder / 2.5).toInt().coerceIn(0, 23)
+
+        val lonSubRemainder = lonSquareRemainder - lonSub * 5.0
+        val latSubRemainder = latSquareRemainder - latSub * 2.5
+
+        val lonExt = (lonSubRemainder / 0.5).toInt().coerceIn(0, 9)
+        val latExt = (latSubRemainder / 0.25).toInt().coerceIn(0, 9)
+
+        return buildString(8) {
+            append(('A'.code + lonField).toChar())
+            append(('A'.code + latField).toChar())
+            append(('0'.code + lonSquare).toChar())
+            append(('0'.code + latSquare).toChar())
+            append(('A'.code + lonSub).toChar())
+            append(('A'.code + latSub).toChar())
+            append(('0'.code + lonExt).toChar())
+            append(('0'.code + latExt).toChar())
+        }.uppercase(Locale.US)
     }
 
     private fun normalizeSerialSelection(
@@ -160,5 +365,10 @@ class SettingsFragment : PreferenceFragmentCompat() {
             editor.putString("rig_usb_port_index", "0")
         }
         editor.apply()
+    }
+
+    private companion object {
+        const val LOCATION_MAX_AGE_MS = 15 * 60 * 1000L
+        const val LOCATION_TIMEOUT_MS = 20 * 1000L
     }
 }

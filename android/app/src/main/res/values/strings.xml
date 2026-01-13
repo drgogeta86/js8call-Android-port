@@ -74,6 +74,7 @@
     <string name="settings_callsign_summary">Your amateur radio callsign</string>
     <string name="settings_grid">Grid Square</string>
     <string name="settings_grid_summary">Your Maidenhead locator</string>
+    <string name="settings_grid_update">Update grid from GPS location</string>
     <string name="settings_info">Info Message</string>
     <string name="settings_info_summary">Reply text for INFO?</string>
     <string name="settings_status">Status Message</string>
@@ -138,6 +139,7 @@
     <string name="permission_audio_denied">Microphone permission denied. Enable in Settings.</string>
     <string name="permission_location_title">Location Permission</string>
     <string name="permission_location_message">Used to automatically determine grid square</string>
+    <string name="permission_location_denied">Location permission denied. Enable in Settings.</string>
 
     <!-- Errors -->
     <string name="error_engine_start">Failed to start engine</string>
@@ -146,6 +148,7 @@
     <string name="error_invalid_callsign">Invalid callsign format</string>
     <string name="error_callsign_required">Please enter your callsign in Settings.</string>
     <string name="error_network">Network error: %s</string>
+    <string name="error_location_update_failed">Unable to update grid from location.</string>
 
     <!-- Notifications -->
     <string name="notification_channel_name">JS8Call Service</string>
